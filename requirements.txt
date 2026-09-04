@@ -1,0 +1,11 @@
+pynput
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
+pyobjc-framework-ApplicationServices
+requests
+python-dotenv
+pandas
+openpyxl
+pypdf
+python-docx
+pytest
