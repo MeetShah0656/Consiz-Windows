@@ -1,0 +1,23 @@
+id,layer,task,status,owner,date,verified_by,notes
+MAC-001,TRIGGER,Middle-click captured and swallowed system-wide (pynput darwin_intercept); app under cursor never sees it,done,hitarth,2026-08-31,,fires on press; busy guard says 'still working'
+MAC-002,TRIGGER,Keyboard fallback ctrl+alt+s,done,hitarth,2026-08-27,,
+MAC-003,CAPTURE,Selected text via Accessibility API with clipboard fallback (simulate Cmd+C then restore),done,hitarth,2026-08-27,,restore is text-only; images on clipboard are lost (KI-06)
+MAC-004,CAPTURE,Finder file/folder/multi-select via AppleScript + clipboard file-URLs,done,hitarth,2026-08-29,,works from Desktop too
+MAC-005,CAPTURE,Address-bar false capture guarded (bare URL -> reselect hint),done,hitarth,2026-08-31,,applies to AX and clipboard paths
+MAC-006,CLASSIFY,Rule-based content typing: text/question/file/folder/csv + confidence threshold,done,hitarth,2026-08-27,,
+MAC-007,CLASSIFY,LLM intent detection (ANSWER/DEFINE/EXPLAIN/SUMMARY/CODE/MATH) with KIND-line protocol,done,hitarth,2026-08-29,,KIND parse tolerates markdown decoration
+MAC-008,SECURITY,Credential redaction before model; prompt-injection defense tested,done,hitarth,2026-08-27,,'ignore instructions' text gets summarized not obeyed
+MAC-009,DETERMINISTIC,CSV/XLSX profile computed by pandas (sums/means/date ranges/% shares/breakdown); LLM never does arithmetic,done,hitarth,2026-08-29,,verified vs hand-checked totals
+MAC-010,DETERMINISTIC,File metadata + text extraction (pdf/docx/xlsx/rtf/txt) and folder details with previews,done,hitarth,2026-08-29,,
+MAC-011,LLM,OpenRouter backend with model in .env + fallback routing + friendly errors,done,hitarth,2026-08-29,,free tier flaky (KI-01); ollama optional offline fallback
+MAC-012,GROUNDING,Narrative numbers checked against computed stats; ungrounded flagged,done,hitarth,2026-08-27,,derived numbers can false-positive (KI-10)
+MAC-013,ROUTER,Dispatch + all 7 spec error states + too-long-selection refusal,done,hitarth,2026-08-31,,
+MAC-014,UI-RESULT,Glass popup at cursor: dark HUD blur; resizable grip; height auto-fits content; streaming bullets; Processing-then-reveal for files/data,done,hitarth,2026-09-03,,clipping bug fixed 09-03
+MAC-015,UI-ASK,Ask button -> input field -> follow-up answer in second light panel,done,hitarth,2026-09-03,,
+MAC-016,PROFILE,profile.md assistant knowledge; used only for personal tasks; refuses to invent prices when empty,done,hitarth,2026-09-03,,gitignored
+MAC-017,CONFIG,.env (key+model) + config.py single source of tunables,done,hitarth,2026-08-29,,
+MAC-018,TESTS,20 pytest unit tests (classify/deterministic/security/files),done,hitarth,2026-08-29,,GUI layers manual-only (docs/PHASE1_TEST_CHECKLIST.md)
+MAC-019,TESTS,Run full docs/PHASE1_TEST_CHECKLIST.md on real apps for 3 days,todo,hitarth,,,exit rule before wider rollout
+MAC-020,PACKAGING,Notarized .app/DMG build,todo,hitarth,,,py2app or briefcase; needed before sharing with non-devs
+MAC-021,UI-RESULT,Single-instance guard (two running copies double-fire),todo,hitarth,,,KI-16
+MAC-022,BILLING,Trial + Razorpay/UPI subscription (289/499),todo,hitarth,,,after 3 external users

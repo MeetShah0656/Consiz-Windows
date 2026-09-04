@@ -1,0 +1,11 @@
+id,layer,task,status,owner,date,verified_by,notes
+AND-001,CONFIG,Decide + document: thin client calling a small Consiz backend API (shared Python logic server-side) vs Kotlin re-implementation,todo,parth,,,Python pipeline does NOT run on Android; recommend thin client + FastAPI wrapper around consiz/ router
+AND-002,TRIGGER,ACTION_PROCESS_TEXT entry: 'Consiz' appears in the system text-selection menu,todo,parth,,,this is Android's version of the middle-click
+AND-003,TRIGGER,Share-sheet entry for files/images,todo,parth,,,
+AND-004,CAPTURE,Selected text arrives via PROCESS_TEXT intent; files via share intent,todo,parth,,,no background global capture on Android — by OS design
+AND-005,ROUTER,Client sends CapturedContext JSON to backend; renders Result JSON,todo,parth,,,contracts in docs/ARCHITECTURE_AND_KNOWN_ISSUES.md §3 — do not invent new fields
+AND-006,UI-RESULT,Floating bubble/overlay panel with the same layout: title / dim facts / bright bullets / meta+Copy+Ask,todo,parth,,,same answer style: short bullets simple language
+AND-007,UI-ASK,Ask follow-up + light second card parity,todo,parth,,,
+AND-008,SECURITY,Redaction runs BEFORE anything leaves the phone (port regexes from consiz/security.py),todo,parth,,,parity rule: same patterns
+AND-009,TESTS,Test on 3 real devices incl one 4GB budget phone,todo,parth,,,target users have budget phones
+AND-010,PACKAGING,Play Store internal testing build,todo,parth,,,

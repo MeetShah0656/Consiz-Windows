@@ -7,6 +7,12 @@
 
 # Project notes
 
-- As Conciz: select anything → middle mouse button → result in the terminal (Phase 1). Popup window next to the selection comes in Phase 2.
+- As Conciz: select anything → middle mouse button → answer in a glass popup next to the cursor (Phase 2 BUILT). `--terminal` prints to terminal instead.
 - LLM: OpenRouter free model (key in `.env`). Local Ollama is only an optional fallback (`--provider ollama`).
 - Run: `python3 main.py` · Test: `python3 -m pytest tests -q`
+
+# For teammates (and their Claude)
+
+- Before touching code, read `docs/ARCHITECTURE_AND_KNOWN_ISSUES.md` (architecture, parity rules, known-issue ids KI-xx) and `team/CHECKPOINTS.md` (how progress is tracked).
+- Update your own `team/checkpoints-<name>-<platform>.csv` in the same commit as the work; mention the checkpoint id (e.g. WIN-003) in the commit message.
+- Shared logic lives in `consiz/` and is never forked per platform.

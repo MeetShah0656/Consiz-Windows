@@ -1,0 +1,13 @@
+id,layer,task,status,owner,date,verified_by,notes
+WIN-001,CONFIG,Dev setup: clone repo; python 3.12+; pip install -r requirements.txt; pytest passes (shared tests are OS-independent),todo,meet,,,read docs/ARCHITECTURE_AND_KNOWN_ISSUES.md first
+WIN-002,CONFIG,Create consiz/platform split (darwin/ vs win32/) so AppKit imports never load on Windows,todo,meet,,,KI-02 — do this FIRST or nothing imports
+WIN-003,TRIGGER,Middle-click captured and swallowed system-wide (WH_MOUSE_LL low-level hook; return 1 to suppress),todo,meet,,,mirror MAC-001 behaviour exactly incl busy guard
+WIN-004,TRIGGER,Keyboard fallback ctrl+alt+s (RegisterHotKey or pynput),todo,meet,,,
+WIN-005,CAPTURE,Selected text via UI Automation (TextPattern) with clipboard fallback (simulate Ctrl+C then restore),todo,meet,,,Electron apps will need the fallback; test Chrome/Word/Excel/Tally
+WIN-006,CAPTURE,Explorer file/folder/multi-select capture (clipboard CF_HDROP / shell automation),todo,meet,,,mirror MAC-004
+WIN-007,CAPTURE,Address-bar guard parity,todo,meet,,,same heuristic as macOS
+WIN-008,UI-RESULT,Result window: acrylic/mica blur; borderless; resizable grip; height auto-fits; streaming; Processing-then-reveal,todo,meet,,,match popup.py behaviour 1:1; WinUI3 or pywebview acceptable
+WIN-009,UI-ASK,Ask field + second light panel parity,todo,meet,,,
+WIN-010,TESTS,App compatibility matrix on Windows (Chrome/Edge/Word/Excel/Notepad/Tally/WhatsApp desktop),todo,meet,,,record per-app capture method used
+WIN-011,PACKAGING,Signed installer (.msi/.exe) + autostart option,todo,meet,,,unsigned global mouse hook WILL trigger antivirus
+WIN-012,TESTS,Full PHASE1 checklist pass on a real Windows laptop,todo,meet,,,

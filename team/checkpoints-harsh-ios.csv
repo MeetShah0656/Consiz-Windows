@@ -1,0 +1,10 @@
+id,layer,task,status,owner,date,verified_by,notes
+IOS-001,CONFIG,Read docs/ARCHITECTURE_AND_KNOWN_ISSUES.md §6: iOS CANNOT do global selection capture — scope is share-sheet companion + Dynamic Island display,todo,harsh,,,do not attempt background capture; App Store will reject and OS blocks it
+IOS-002,TRIGGER,Share-sheet Action Extension: select text -> Share -> Consiz,todo,harsh,,,
+IOS-003,TRIGGER,Shortcuts/App Intents entry ('Summarize with Consiz'),todo,harsh,,,
+IOS-004,CAPTURE,Text/files arrive via extension context; sent as CapturedContext JSON to backend,todo,harsh,,,same contract as Android (AND-005)
+IOS-005,UI-RESULT,Live Activity: 'Summarizing…' then 1-2 line result in Dynamic Island; expanded view on long-press; full result in app/notification,todo,harsh,,,island is the showpiece demo
+IOS-006,UI-ASK,Follow-up question from the expanded Live Activity or app,todo,harsh,,,
+IOS-007,SECURITY,Redaction before upload (port consiz/security.py patterns to Swift),todo,harsh,,,parity rule
+IOS-008,TESTS,Test on iPhone with and without Dynamic Island (fallback = notification),todo,harsh,,,
+IOS-009,PACKAGING,TestFlight build,todo,harsh,,,
