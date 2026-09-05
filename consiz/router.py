@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from . import deterministic as det
 from . import llm
@@ -156,7 +157,6 @@ def _csv(ctx: CapturedContext, cls, content: str) -> Result:
 
 def process_dictation(ctx: CapturedContext, instruction: Any, language_name: str = "") -> Result:
     """Process selected context according to a voice-dictated instruction with language detection."""
-    from typing import Any
     t0 = time.perf_counter()
     app = ctx.source_app
 
@@ -192,23 +192,50 @@ def process_dictation(ctx: CapturedContext, instruction: Any, language_name: str
     )
     if low_inst in copy_commands:
         copied = False
-        try:
-            import win32clipboard
-            import win32con
-            win32clipboard.OpenClipboard()
-            win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardText(content, win32con.CF_UNICODETEXT)
-            win32clipboard.CloseClipboard()
-            copied = True
-        except Exception:
+        import sys
+        if sys.platform == "win32":
             try:
-                import tkinter as tk
-                root = tk.Tk()
-                root.withdraw()
-                root.clipboard_clear()
-                root.clipboard_append(content)
-                root.update()
-                root.destroy()
+                import win32clipboard
+                import win32con
+                for _ in range(8):
+                    try:
+                        win32clipboard.OpenClipboard()
+                        break
+                    except Exception:
+                        time.sleep(0.02)
+                else:
+                    raise RuntimeError("Could not open clipboard")
+                try:
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardText(content, win32con.CF_UNICODETEXT)
+                    copied = True
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception:
+                try:
+                    import ctypes
+                    user32 = ctypes.windll.user32
+                    kernel32 = ctypes.windll.kernel32
+                    if user32.OpenClipboard(None):
+                        try:
+                            user32.EmptyClipboard()
+                            data = content.encode("utf-16-le") + b"\x00\x00"
+                            h = kernel32.GlobalAlloc(0x0042, len(data))
+                            if h:
+                                p = kernel32.GlobalLock(h)
+                                if p:
+                                    ctypes.memmove(p, data, len(data))
+                                    kernel32.GlobalUnlock(h)
+                                    user32.SetClipboardData(13, h)  # CF_UNICODETEXT
+                                    copied = True
+                        finally:
+                            user32.CloseClipboard()
+                except Exception as e:
+                    warnings.append(f"Clipboard action failed: {e}")
+        elif sys.platform == "darwin":
+            try:
+                import subprocess
+                subprocess.run(["pbcopy"], input=content.encode("utf-8"), check=True)
                 copied = True
             except Exception as e:
                 warnings.append(f"Clipboard action failed: {e}")

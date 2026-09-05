@@ -27,8 +27,9 @@ WM_QUIT = 0x0012
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
-VK_S = 0x53
-VK_D = 0x44
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+
 HOTKEY_ID = 0xC001
 HOTKEY_DICTATE_ID = 0xC002
 
@@ -58,6 +59,40 @@ user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.UnregisterHotKey.restype = wintypes.BOOL
 
 
+def parse_hotkey_to_win32(hotkey_str: str) -> tuple[int, int] | None:
+    """Parses a pynput-style hotkey string into Win32 (modifiers, virtual_key)."""
+    if not hotkey_str:
+        return None
+    parts = [p.strip().lower() for p in hotkey_str.split("+") if p.strip()]
+    mods = 0
+    vk = None
+    for part in parts:
+        if part in ("<ctrl>", "<control>", "ctrl", "control"):
+            mods |= MOD_CONTROL
+        elif part in ("<alt>", "alt"):
+            mods |= MOD_ALT
+        elif part in ("<shift>", "shift"):
+            mods |= MOD_SHIFT
+        elif part in ("<cmd>", "<win>", "<super>", "win"):
+            mods |= MOD_WIN
+        else:
+            key_name = part.strip("<> ")
+            if len(key_name) == 1:
+                vk = ord(key_name.upper())
+            elif key_name.startswith("f") and key_name[1:].isdigit() and 1 <= int(key_name[1:]) <= 24:
+                vk = 0x70 + (int(key_name[1:]) - 1)
+            elif key_name == "space":
+                vk = 0x20
+            else:
+                return None
+    if vk is None:
+        return None
+    return mods, vk
+
+
+_PERMANENT_HOOK_CB = None
+
+
 class Trigger:
     def __init__(
         self,
@@ -75,6 +110,9 @@ class Trigger:
         self._mouse_hook = None
         self._mouse_cb = None
         self._running = False
+        self._native_ready = threading.Event()
+        self._native_registered: set[str] = set()
+        self._last_middle_click_time = 0.0
 
     def _fire(self, source: str) -> None:
         if not self._busy.acquire(blocking=False):
@@ -109,30 +147,60 @@ class Trigger:
     def _mouse_hook_proc(self, nCode: int, wParam: int, lParam: int) -> int:
         if nCode >= 0:
             if wParam == WM_MBUTTONDOWN:
-                self._fire("middle-click")
+                # W-02: Return immediately without blocking the Windows low-level hook thread
+                threading.Thread(target=self._fire, args=("middle-click",), daemon=True).start()
                 return 1  # Swallow middle-click so selection is never lost
             elif wParam in (WM_MBUTTONUP, WM_MBUTTONDBLCLK):
                 return 1  # Swallow release/double-click as well
         return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
+    def _install_mouse_hook(self) -> None:
+        """Installs or refreshes the WH_MOUSE_LL hook (W-02)."""
+        hmod = kernel32.GetModuleHandleW(None)
+        new_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_cb, hmod, 0)
+        if new_hook:
+            old_hook = self._mouse_hook
+            self._mouse_hook = new_hook
+            if old_hook:
+                try:
+                    user32.UnhookWindowsHookEx(old_hook)
+                except Exception:
+                    pass
+
     def _run_native_event_pump(self) -> None:
+        global _PERMANENT_HOOK_CB
         set_thread_high_priority()
         self._hook_tid = kernel32.GetCurrentThreadId()
 
-        # 1. Register Kernel HotKeys (Ctrl+Alt+S and Ctrl+Alt+D)
-        user32.RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_S)
-        if self._on_dictate:
-            user32.RegisterHotKey(None, HOTKEY_DICTATE_ID, MOD_CONTROL | MOD_ALT, VK_D)
+        # 1. Register Kernel HotKeys dynamically from CONFIG
+        parsed_hk = parse_hotkey_to_win32(CONFIG.hotkey)
+        if parsed_hk:
+            mods, vk = parsed_hk
+            if user32.RegisterHotKey(None, HOTKEY_ID, mods, vk):
+                self._native_registered.add("hotkey")
 
-        # 2. Install Low-Level Mouse Hook (hmod must be None for WH_MOUSE_LL in thread)
+        dictate_hk_str = getattr(CONFIG, "dictate_hotkey", "")
+        if self._on_dictate and dictate_hk_str:
+            parsed_d = parse_hotkey_to_win32(dictate_hk_str)
+            if parsed_d:
+                mods_d, vk_d = parsed_d
+                if user32.RegisterHotKey(None, HOTKEY_DICTATE_ID, mods_d, vk_d):
+                    self._native_registered.add("dictate")
+
+        # 2. Install Low-Level Mouse Hook with global permanent callback reference
         self._mouse_cb = HOOKPROC(self._mouse_hook_proc)
-        self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_cb, None, 0)
+        _PERMANENT_HOOK_CB = self._mouse_cb
+        self._install_mouse_hook()
         if not self._mouse_hook:
             err = kernel32.GetLastError()
             from consiz import output
             output.notify(f"Warning: Low-level mouse hook failed (Error {err}). Fallback hotkey {CONFIG.hotkey} active.")
 
-        # 3. Dedicated message pump for hook & hotkey events
+        # Set a 3-second watchdog timer to refresh hook in case Windows drops slow hooks (W-02)
+        user32.SetTimer(None, 0x5001, 3000, None)
+        self._native_ready.set()
+
+        # 3. Dedicated message pump for hook, timer, & hotkey events
         msg = wintypes.MSG()
         while self._running and user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             if msg.message == WM_HOTKEY:
@@ -140,15 +208,22 @@ class Trigger:
                     self._fire("hotkey")
                 elif msg.wParam == HOTKEY_DICTATE_ID:
                     self._fire_dictate("dictate-hotkey")
+            elif msg.message == 0x0113:  # WM_TIMER
+                # Watchdog tick: refresh mouse hook to ensure it never dies silently
+                if self._running:
+                    self._install_mouse_hook()
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
         # Cleanup
+        user32.KillTimer(None, 0x5001)
         if self._mouse_hook:
             user32.UnhookWindowsHookEx(self._mouse_hook)
             self._mouse_hook = None
-        user32.UnregisterHotKey(None, HOTKEY_ID)
-        user32.UnregisterHotKey(None, HOTKEY_DICTATE_ID)
+        if "hotkey" in self._native_registered:
+            user32.UnregisterHotKey(None, HOTKEY_ID)
+        if "dictate" in self._native_registered:
+            user32.UnregisterHotKey(None, HOTKEY_DICTATE_ID)
 
     def start(self) -> None:
         self._running = True
@@ -157,16 +232,18 @@ class Trigger:
         # Start unified native hook & hotkey message pump
         self._hook_thread = threading.Thread(target=self._run_native_event_pump, name="consiz-native-events", daemon=True)
         self._hook_thread.start()
+        self._native_ready.wait(timeout=1.0)
 
-        # Extra fallback: pynput GlobalHotKeys
-        hotkeys = {}
-        if CONFIG.hotkey:
-            hotkeys[CONFIG.hotkey] = lambda: self._fire("hotkey")
-        if getattr(CONFIG, "dictate_hotkey", None) and self._on_dictate:
-            hotkeys[CONFIG.dictate_hotkey] = lambda: self._fire_dictate("dictate-hotkey")
-        if hotkeys:
+        # Fallback with pynput ONLY for hotkeys that Windows RegisterHotKey could not register
+        fallback_hotkeys = {}
+        if CONFIG.hotkey and "hotkey" not in self._native_registered:
+            fallback_hotkeys[CONFIG.hotkey] = lambda: self._fire("hotkey")
+        if getattr(CONFIG, "dictate_hotkey", None) and self._on_dictate and "dictate" not in self._native_registered:
+            fallback_hotkeys[CONFIG.dictate_hotkey] = lambda: self._fire_dictate("dictate-hotkey")
+
+        if fallback_hotkeys:
             try:
-                hk = keyboard.GlobalHotKeys(hotkeys)
+                hk = keyboard.GlobalHotKeys(fallback_hotkeys)
                 hk.daemon = True
                 hk.start()
                 self._listeners.append(hk)

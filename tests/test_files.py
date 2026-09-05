@@ -34,3 +34,10 @@ def test_folder_details(tmp_path):
     assert md["direct_files"] == 1 and md["direct_folders"] == 1 and md["files"] == 2
     assert md["created"] and md["subfolders"] == ["src"]
     assert md["previews"][0][0] == "README.md" and "demo scripts" in md["previews"][0][1]
+
+
+def test_rtf_preview(tmp_path):
+    p = tmp_path / "doc.rtf"
+    p.write_text(r"{\rtf1\ansi\deff0 {\fonttbl {\f0 Courier;}}\f0\fs24 Hello Consiz RTF Document!}")
+    txt = extract_text(str(p), 100)
+    assert txt is not None and "Hello Consiz RTF Document!" in txt

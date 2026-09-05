@@ -129,6 +129,7 @@ class AudioRecorder:
         self._start_time = 0.0
         self._on_level: Optional[Callable[[float], None]] = None
         self._on_auto_stop: Optional[Callable[[], None]] = None
+        self._auto_stopped = False
 
     @property
     def is_recording(self) -> bool:
@@ -139,8 +140,23 @@ class AudioRecorder:
         on_level: Optional[Callable[[float], None]] = None,
         on_auto_stop: Optional[Callable[[], None]] = None,
     ) -> None:
-        """Start capturing microphone audio."""
+        """Start capturing microphone audio (W-09: validates microphone presence)."""
         import sounddevice as sd
+
+        # W-09: Validate that an audio input device actually exists
+        try:
+            devs = sd.query_devices()
+            has_input = False
+            if isinstance(devs, dict):
+                has_input = devs.get("max_input_channels", 0) > 0
+            elif isinstance(devs, (list, tuple)):
+                has_input = any(isinstance(d, dict) and d.get("max_input_channels", 0) > 0 for d in devs)
+            if not has_input:
+                raise RuntimeError("No microphone detected. Please connect an audio input device.")
+        except Exception as e:
+            if "No microphone" in str(e):
+                raise
+            raise RuntimeError(f"Microphone unavailable: {e}")
 
         with self._lock:
             if self._recording:
@@ -148,6 +164,7 @@ class AudioRecorder:
             self._chunks.clear()
             self._recording = True
             self._speech_started = False
+            self._auto_stopped = False
             self._start_time = time.time()
             self._last_speech_time = self._start_time
             self._on_level = on_level
@@ -158,6 +175,8 @@ class AudioRecorder:
                 return
             chunk = indata.copy().flatten()
             with self._lock:
+                if not self._recording:
+                    return
                 self._chunks.append(chunk)
 
             # Calculate RMS audio energy
@@ -175,14 +194,18 @@ class AudioRecorder:
                 self._speech_started = True
                 self._last_speech_time = now
             elif self._speech_started and self.auto_stop_on_silence:
-                # Only auto-stop on silence if explicitly enabled (keeps listening until 'Done' by default)
+                # W-06: Only trigger auto stop once, preventing runaway threads
                 if (now - self._last_speech_time) >= self.silence_duration_s:
-                    self._trigger_auto_stop()
+                    if not self._auto_stopped:
+                        self._auto_stopped = True
+                        self._trigger_auto_stop()
                     return
 
-            # Max duration safeguard (safety timeout)
+            # W-06: Max duration safeguard triggers auto stop only once
             if (now - self._start_time) >= self.max_duration_s:
-                self._trigger_auto_stop()
+                if not self._auto_stopped:
+                    self._auto_stopped = True
+                    self._trigger_auto_stop()
 
         self._stream = sd.InputStream(
             samplerate=self.sample_rate,
@@ -204,36 +227,44 @@ class AudioRecorder:
                 pass
 
     def stop(self) -> np.ndarray:
-        """Stop recording and return captured audio as 1D float32 numpy array."""
+        """Stop recording and return audio array without deadlocking UI (W-05)."""
         with self._lock:
-            self._recording = False
-            if self._stream is not None:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                except Exception:
-                    pass
-                self._stream = None
-
-            if not self._chunks:
+            if not self._recording:
                 return np.zeros(0, dtype=np.float32)
-
-            audio = np.concatenate(self._chunks, axis=0).astype(np.float32)
+            self._recording = False
+            stream = self._stream
+            self._stream = None
+            chunks = list(self._chunks)
             self._chunks.clear()
-            return audio
+
+        # Stop and close the stream OUTSIDE the lock to avoid deadlock with audio_callback (W-05)
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+
+        audio = np.concatenate(chunks, axis=0).astype(np.float32)
+        return audio
 
     def cancel(self) -> None:
-        """Cancel and discard recording."""
+        """Cancel and discard recording without deadlocking UI (W-05)."""
         with self._lock:
             self._recording = False
-            if self._stream is not None:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                except Exception:
-                    pass
-                self._stream = None
+            stream = self._stream
+            self._stream = None
             self._chunks.clear()
+
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
 
 
 class DictationEngine:

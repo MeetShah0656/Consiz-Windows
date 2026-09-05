@@ -21,8 +21,10 @@ from AppKit import (
 from AppKit import NSAppearance
 from PyObjCTools import AppHelper
 
+from consiz.config import CONFIG
+from consiz.dictation import AudioRecorder, get_dictation_engine
 from consiz.llm import KIND_TITLES, LLMError
-from consiz.models import Result
+from consiz.models import CapturedContext, CaptureMethod, Result
 from consiz.output import _pretty_line
 
 WIDTH = 400
@@ -122,6 +124,15 @@ class PopupUI:
         self._lines: list[str] = []
         self.user_size = None          # (w, h) once the user drags a corner/edge — respected from then on
         self._programmatic = False     # our own setFrame calls must not count as user resizes
+        self.on_dictate = None
+        self._is_dictating = False
+        self._captured_ctx: CapturedContext | None = None
+        self._recorder = AudioRecorder(
+            sample_rate=CONFIG.dictate_sample_rate,
+            silence_threshold=CONFIG.dictate_silence_threshold,
+            silence_duration_s=CONFIG.dictate_silence_duration_s,
+            max_duration_s=CONFIG.dictate_max_duration_s,
+        )
 
     # ---------------------------------------------------------- main-thread UI
     def _build(self):
@@ -328,6 +339,9 @@ class PopupUI:
             self.panel.makeFirstResponder_(self.ask_field)
 
     def hide(self):
+        if self._is_dictating:
+            self._is_dictating = False
+            self._recorder.cancel()
         if self.panel is not None:
             self.panel.orderOut_(None)
         if self.answer_ui is not None:
@@ -338,6 +352,65 @@ class PopupUI:
         if self._click_monitor is not None:
             NSEvent.removeMonitor_(self._click_monitor)
             self._click_monitor = None
+
+    def start_dictation_flow(self, ctx: CapturedContext, at=None):
+        self._captured_ctx = ctx
+        self.context = ctx.raw_content
+        self._is_dictating = True
+        point = at or NSEvent.mouseLocation()
+        AppHelper.callAfter(self._show_at, point, "🎙 Dictate Command", "Listening... press dictate hotkey when finished")
+        hints = [
+            ("- 🎙 Listening for your voice instruction...", False),
+            ("- Speak what you want to do with the selected text:", True),
+            ("  • 'Summarize this in 3 bullets'", True),
+            ("  • 'Translate this into Gujarati / Spanish / Hindi'", True),
+            ("  • 'Explain what this code does'", True),
+            ("  • 'Draft a professional email reply'", True),
+            ("- Press dictate shortcut when finished.", False),
+        ]
+        AppHelper.callAfter(self._set_lines, hints)
+        self._recorder.start(on_auto_stop=self._on_auto_stop)
+
+    def _on_auto_stop(self):
+        if self._is_dictating:
+            self.stop_dictation()
+
+    def stop_dictation(self):
+        if not self._is_dictating:
+            return
+        self._is_dictating = False
+        audio = self._recorder.stop()
+        AppHelper.callAfter(self._set_title, "⚡ Transcribing...")
+        AppHelper.callAfter(self._set_meta, "faster-whisper transcribing speech to command...")
+
+        def _transcribe_and_run():
+            engine = get_dictation_engine()
+            res = engine.transcribe(audio)
+            if not res.text:
+                AppHelper.callAfter(self._set_title, "No Speech Detected")
+                AppHelper.callAfter(self._set_meta, "Try speaking again or use 'Ask'")
+                return
+            lang_badge = f"[{res.language_name}] " if res.language != "en" else ""
+            clean_text = res.text.strip()
+            disp_title = f"🎙 {lang_badge}\"{clean_text[:30]}...\"" if len(clean_text) > 30 else f"🎙 {lang_badge}\"{clean_text}\""
+            AppHelper.callAfter(self._set_title, disp_title)
+            AppHelper.callAfter(self._set_meta, f"Language: {res.language_name} ({res.language_probability:.0%}) · Processing...")
+
+            if self.on_dictate:
+                self.on_dictate(self._captured_ctx, res)
+            else:
+                from consiz.router import process_dictation
+                result = process_dictation(self._captured_ctx, res)
+                self.show_result(result)
+
+        threading.Thread(target=_transcribe_and_run, name="darwin-whisper-worker", daemon=True).start()
+
+    def toggle_dictation(self):
+        if self._is_dictating:
+            self.stop_dictation()
+        else:
+            ctx = self._captured_ctx or CapturedContext("active", CaptureMethod.TEXT_SELECTION, self.context)
+            self.start_dictation_flow(ctx)
 
     def full_text(self) -> str:
         return "\n".join(self._lines)

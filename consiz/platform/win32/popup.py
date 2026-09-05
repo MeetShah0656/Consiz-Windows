@@ -25,6 +25,8 @@ PAD = 14
 SW_SHOWNOACTIVATE = 4
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
+WS_EX_NOACTIVATE = 0x08000000
+GWL_EXSTYLE = -20
 user32 = ctypes.windll.user32
 dwmapi = ctypes.windll.dwmapi
 
@@ -42,6 +44,15 @@ user32.SetWindowPos.argtypes = [
     ctypes.c_uint
 ]
 user32.SetWindowPos.restype = wintypes.BOOL
+
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = ctypes.c_long
+
+user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+user32.SetWindowLongW.restype = ctypes.c_long
+
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
 
 HWND_TOPMOST = ctypes.cast(-1, wintypes.HWND).value
 
@@ -201,8 +212,12 @@ class PopupUI:
             height=6,
             highlightthickness=0
         )
+        scrollbar = tk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+        scrollbar.pack(side="right", fill="y")
+        text_widget.config(yscrollcommand=scrollbar.set)
         text_widget.pack(side="left", fill="both", expand=True)
         text_widget.config(state="disabled")
+        text_widget.bind("<MouseWheel>", lambda e: text_widget.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         # Ask entry row (hidden initially)
         ask_frame = tk.Frame(container, bg=bg_color)
@@ -292,7 +307,28 @@ class PopupUI:
         self.ask_btn = ask_btn
         self.dictate_btn = dictate_btn
 
+        try:
+            win.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+            old_ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, old_ex | WS_EX_NOACTIVATE)
+        except Exception:
+            pass
+
         _apply_acrylic(win, is_dark=not self.light)
+
+    def _compute_height(self) -> int:
+        if self.user_size:
+            return self.user_size[1]
+        line_count = len(self._lines)
+        for l in self._lines:
+            if len(l) > 42:
+                line_count += len(l) // 42
+        sh = self.window.winfo_screenheight() if self.window else 900
+        max_h = int(sh * 0.65)
+        ask_h = 42 if self.ask_visible else 0
+        computed = 120 + max(3, line_count) * 22 + ask_h
+        return min(max(computed, 180), max_h)
 
     def _show_at(self, point: tuple[int, int], title: str, meta: str) -> None:
         if self.window is None:
@@ -308,7 +344,8 @@ class PopupUI:
         self.copy_btn.config(text="Copy")
 
         px, py = point
-        w, h = self.user_size or (WIDTH, 220)
+        w = self.user_size[0] if self.user_size else WIDTH
+        h = self._compute_height()
 
         # Ensure on screen
         sw = self.window.winfo_screenwidth()
@@ -317,14 +354,14 @@ class PopupUI:
         y = min(max(py + 15, 10), sh - h - 10)
 
         self.window.geometry(f"{w}x{h}+{x}+{y}")
-        self.window.deiconify()
 
-        # Show without stealing focus
+        # Show without stealing focus (W-07)
         try:
             hwnd = ctypes.windll.user32.GetParent(self.window.winfo_id()) or self.window.winfo_id()
+            user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
             user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
         except Exception:
-            pass
+            self.window.deiconify()
 
     def _append(self, line: str, dim: bool = False) -> None:
         self._lines.append(line)
@@ -333,6 +370,18 @@ class PopupUI:
         self.text_widget.insert("end", prefix + line)
         self.text_widget.see("end")
         self.text_widget.config(state="disabled")
+
+        if self.window and self.user_size is None:
+            new_h = self._compute_height()
+            cur_h = self.window.winfo_height()
+            if new_h > cur_h:
+                cur_x = self.window.winfo_x()
+                cur_y = self.window.winfo_y()
+                w = self.window.winfo_width()
+                sh = self.window.winfo_screenheight()
+                if cur_y + new_h > sh - 10:
+                    cur_y = max(10, sh - new_h - 10)
+                self.window.geometry(f"{w}x{new_h}+{cur_x}+{cur_y}")
 
     def _set_title(self, title: str) -> None:
         if self.title_lbl:
@@ -401,7 +450,20 @@ class PopupUI:
         if self.dictate_btn:
             _dispatch(self.dictate_btn.config, {"text": "✓ Done", "fg": "#10b981"})
 
-        self._recorder.start(on_level=self._on_audio_level, on_auto_stop=self._on_auto_stop)
+        try:
+            self._recorder.start(on_level=self._on_audio_level, on_auto_stop=self._on_auto_stop)
+        except Exception as e:
+            self._is_dictating = False
+            fg_col = "#111111" if self.light else "#f0f2f5"
+            if self.dictate_btn:
+                _dispatch(self.dictate_btn.config, {"text": "🎙 Dictate", "fg": fg_col})
+            _dispatch(self._set_title, "Microphone Error")
+            _dispatch(self._set_meta, "No active audio input device")
+            _dispatch(self._set_lines, [
+                ("- Could not start recording: " + str(e), False),
+                ("- Please connect or enable a microphone in Windows Sound Settings and try again.", True),
+            ])
+            return
 
     def stop_dictation(self) -> None:
         if not self._is_dictating:
@@ -443,17 +505,20 @@ class PopupUI:
         threading.Thread(target=_transcribe_and_run, name="whisper-transcribe-worker", daemon=True).start()
 
     def hide(self) -> None:
-        if self._is_dictating:
-            self._is_dictating = False
-            self._recorder.cancel()
-            if self.dictate_btn:
-                self.dictate_btn.config(text="🎙 Dictate", fg="#111111" if self.light else "#f0f2f5")
-        if self.window is not None:
-            self.window.withdraw()
-        if self.answer_ui is not None:
-            self.answer_ui.hide()
-        if self.ask_visible:
-            self.toggle_ask()
+        def _do_hide():
+            if self._is_dictating:
+                self._is_dictating = False
+                self._recorder.cancel()
+                if self.dictate_btn:
+                    self.dictate_btn.config(text="🎙 Dictate", fg="#111111" if self.light else "#f0f2f5")
+            if self.window is not None:
+                self.window.withdraw()
+            if self.answer_ui is not None:
+                self.answer_ui.hide()
+            if self.ask_visible:
+                self.toggle_ask()
+
+        _dispatch(_do_hide)
 
     def full_text(self) -> str:
         return "\n".join(self._lines)

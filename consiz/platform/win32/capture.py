@@ -12,32 +12,85 @@ from ctypes import wintypes
 import os
 import time
 
+import sys
 import urllib.parse
 
 from consiz.config import CONFIG
 from consiz.models import CapturedContext, CaptureMethod
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+if sys.platform == "win32":
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    ole32 = ctypes.windll.ole32
 
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-VK_CONTROL = 0x11
-VK_MENU = 0x12
-VK_SHIFT = 0x10
-KEYEVENTF_KEYUP = 0x0002
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    VK_CONTROL = 0x11
+    VK_MENU = 0x12
+    VK_SHIFT = 0x10
+    KEYEVENTF_KEYUP = 0x0002
 
-# Set 64-bit prototypes to prevent handle truncation
-user32.GetForegroundWindow.restype = wintypes.HWND
-user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-user32.GetAsyncKeyState.restype = ctypes.c_short
+    # Set 64-bit prototypes to prevent handle truncation
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
 
-kernel32.OpenProcess.restype = wintypes.HANDLE
-kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
-kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.EnumClipboardFormats.argtypes = [wintypes.UINT]
+    user32.EnumClipboardFormats.restype = wintypes.UINT
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+else:
+    user32 = None
+    kernel32 = None
+    ole32 = None
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    VK_CONTROL = 0x11
+    VK_MENU = 0x12
+    VK_SHIFT = 0x10
+    KEYEVENTF_KEYUP = 0x0002
+
+
+def init_com_for_thread() -> bool:
+    """Initializes COM on the calling thread so UI Automation and Shell COM succeed (W-03)."""
+    if sys.platform == "win32" and ole32 is not None:
+        try:
+            hr = ole32.CoInitialize(None)
+            return hr in (0, 1)  # S_OK or S_FALSE (already initialized)
+        except Exception:
+            pass
+    return False
+
+
+def uninit_com_for_thread() -> None:
+    """Uninitializes COM on the calling thread."""
+    if sys.platform == "win32" and ole32 is not None:
+        try:
+            ole32.CoUninitialize()
+        except Exception:
+            pass
 
 
 BROWSER_PROCESSES = {
@@ -240,12 +293,13 @@ def build_browser_context(hwnd: int, app_exe: str, win_title: str) -> dict:
 
 # ---------------------------------------------------------------- Explorer selection
 def explorer_selection() -> list[str]:
-    """Inspects the active Explorer window for selected files/folders via Shell COM."""
+    """Inspects the active Explorer window for selected files/folders via Shell COM (W-03)."""
+    init_com_for_thread()
     paths: list[str] = []
     try:
         import win32com.client
         shell = win32com.client.Dispatch("Shell.Application")
-        hwnd_fg = user32.GetForegroundWindow()
+        hwnd_fg = user32.GetForegroundWindow() if user32 else 0
         for window in shell.Windows():
             try:
                 if int(window.HWND) == int(hwnd_fg):
@@ -263,7 +317,8 @@ def explorer_selection() -> list[str]:
 
 # ---------------------------------------------------------------- UI Automation
 def uia_selected_text() -> str:
-    """Attempts to fetch selected text using UI Automation without touching the clipboard."""
+    """Attempts to fetch selected text using UI Automation without touching the clipboard (W-03)."""
+    init_com_for_thread()
     try:
         import uiautomation as auto
         focused = auto.GetFocusedControl()
@@ -281,6 +336,62 @@ def uia_selected_text() -> str:
 
 
 # ---------------------------------------------------------------- Clipboard Fallback
+def _snapshot_all_clipboard_formats() -> list[tuple[int, bytes]]:
+    """Captures all clipboard formats as raw global memory buffers (W-01). Preserves images, files, formatting."""
+    if not user32 or not kernel32:
+        return []
+    for _ in range(5):
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.02)
+    else:
+        return []
+
+    items = []
+    try:
+        fmt = user32.EnumClipboardFormats(0)
+        while fmt:
+            hData = user32.GetClipboardData(fmt)
+            if hData:
+                sz = kernel32.GlobalSize(hData)
+                if sz > 0:
+                    p = kernel32.GlobalLock(hData)
+                    if p:
+                        b = ctypes.string_at(p, sz)
+                        kernel32.GlobalUnlock(hData)
+                        items.append((fmt, b))
+            fmt = user32.EnumClipboardFormats(fmt)
+    finally:
+        user32.CloseClipboard()
+    return items
+
+
+def _restore_all_clipboard_formats(items: list[tuple[int, bytes]]) -> None:
+    """Restores previous clipboard formats in full binary fidelity without losing screenshots/files (W-01)."""
+    if not user32 or not kernel32 or not items:
+        return
+    for _ in range(8):
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.02)
+    else:
+        return
+
+    GHND = 0x0042
+    try:
+        user32.EmptyClipboard()
+        for fmt, b in items:
+            h = kernel32.GlobalAlloc(GHND, len(b))
+            if h:
+                p = kernel32.GlobalLock(h)
+                if p:
+                    ctypes.memmove(p, b, len(b))
+                    kernel32.GlobalUnlock(h)
+                    user32.SetClipboardData(fmt, h)
+    finally:
+        user32.CloseClipboard()
+
+
 def _safe_open_clipboard(retries: int = 8, delay: float = 0.02) -> bool:
     import win32clipboard
     for _ in range(retries):
@@ -302,82 +413,71 @@ def _safe_close_clipboard() -> None:
 
 def _press_ctrl_c() -> None:
     # Release any held modifiers (Alt / Shift) so Ctrl+C does not turn into Ctrl+Alt+C
-    alt_down = bool(user32.GetAsyncKeyState(VK_MENU) & 0x8000)
-    shift_down = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000)
+    alt_down = bool(user32.GetAsyncKeyState(VK_MENU) & 0x8000) if user32 else False
+    shift_down = bool(user32.GetAsyncKeyState(VK_SHIFT) & 0x8000) if user32 else False
 
-    if alt_down:
+    if alt_down and user32:
         user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-    if shift_down:
+    if shift_down and user32:
         user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
 
-    user32.keybd_event(VK_CONTROL, 0, 0, 0)
-    user32.keybd_event(ord('C'), 0, 0, 0)
-    time.sleep(0.02)
-    user32.keybd_event(ord('C'), 0, KEYEVENTF_KEYUP, 0)
-    user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+    if user32:
+        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(ord('C'), 0, 0, 0)
+        time.sleep(0.02)
+        user32.keybd_event(ord('C'), 0, KEYEVENTF_KEYUP, 0)
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
 
     # Restore physically held modifiers
-    if alt_down:
+    if alt_down and user32:
         user32.keybd_event(VK_MENU, 0, 0, 0)
-    if shift_down:
+    if shift_down and user32:
         user32.keybd_event(VK_SHIFT, 0, 0, 0)
 
 
 def clipboard_fallback() -> tuple[str, list[str]]:
-    """Simulates Ctrl+C, captures text or copied files, and restores original clipboard contents."""
+    """Simulates Ctrl+C safely without destroying the previous clipboard (W-01)."""
     import win32clipboard
     import win32con
 
-    prev_text = None
-    prev_files = None
+    # 1. Snapshot all formats in full fidelity (preserving images, screenshots, files)
+    snapshot = _snapshot_all_clipboard_formats()
+    seq_before = user32.GetClipboardSequenceNumber() if user32 else 0
 
-    # 1. Read existing clipboard content and empty it ready for capture
-    if _safe_open_clipboard():
-        try:
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                try:
-                    prev_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                except Exception:
-                    pass
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_HDROP):
-                try:
-                    prev_files = win32clipboard.GetClipboardData(win32con.CF_HDROP)
-                except Exception:
-                    pass
-            win32clipboard.EmptyClipboard()
-        finally:
-            _safe_close_clipboard()
-
-    # 2. Simulate Ctrl+C with modifiers released
+    # 2. Simulate Ctrl+C with modifiers released (NEVER empty the clipboard beforehand)
     _press_ctrl_c()
-    time.sleep(CONFIG.clipboard_settle_s)
+
+    # Wait for sequence number to change indicating newly copied selection
+    settle_deadline = time.time() + CONFIG.clipboard_settle_s
+    copied_new = False
+    while time.time() < settle_deadline:
+        if user32 and user32.GetClipboardSequenceNumber() != seq_before:
+            copied_new = True
+            break
+        time.sleep(0.02)
 
     captured_text = ""
     captured_paths: list[str] = []
 
-    # 3. Read newly captured clipboard content and restore previous
-    if _safe_open_clipboard():
-        try:
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_HDROP):
-                try:
-                    captured_paths = list(win32clipboard.GetClipboardData(win32con.CF_HDROP) or [])
-                except Exception:
-                    pass
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                try:
-                    captured_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT) or ""
-                except Exception:
-                    pass
+    # 3. Read newly captured clipboard content only if Ctrl+C succeeded
+    if copied_new:
+        if _safe_open_clipboard():
+            try:
+                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_HDROP):
+                    try:
+                        captured_paths = list(win32clipboard.GetClipboardData(win32con.CF_HDROP) or [])
+                    except Exception:
+                        pass
+                if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
+                    try:
+                        captured_text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT) or ""
+                    except Exception:
+                        pass
+            finally:
+                _safe_close_clipboard()
 
-            # 4. Restore original clipboard content
-            win32clipboard.EmptyClipboard()
-            if prev_text:
-                try:
-                    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, prev_text)
-                except Exception:
-                    pass
-        finally:
-            _safe_close_clipboard()
+        # 4. Restore original clipboard content in full fidelity (W-01)
+        _restore_all_clipboard_formats(snapshot)
 
     return captured_text, [p.rstrip("/\\") if len(p) > 3 else p for p in captured_paths]
 
@@ -393,54 +493,58 @@ def _path_context(app: str, paths: list[str]) -> CapturedContext:
 
 
 def capture() -> CapturedContext:
-    app, win_title, hwnd = frontmost_window_info()
+    init_com_for_thread()
+    try:
+        app, win_title, hwnd = frontmost_window_info()
 
-    # 1. Windows Explorer
-    if app.lower() in ("explorer.exe", "explorer"):
-        paths = explorer_selection()
+        # 1. Windows Explorer
+        if app.lower() in ("explorer.exe", "explorer"):
+            paths = explorer_selection()
+            if paths:
+                return _path_context(app, paths)
+
+        # Detect if foreground window is a browser
+        is_browser = app.lower() in BROWSER_PROCESSES or any(win_title.endswith(s) for s in BROWSER_TITLE_SUFFIXES)
+        browser_info = build_browser_context(hwnd, app, win_title) if is_browser else {}
+
+        # 2. UI Automation
+        text = uia_selected_text()
+        if _looks_like_address_bar(text):
+            text = ""  # focus in browser address bar; fall back
+        if text.strip():
+            ctx = CapturedContext(
+                source_app=browser_info.get("browser", app),
+                capture_method=CaptureMethod.TEXT_SELECTION,
+                raw_content=text,
+            )
+            if browser_info:
+                ctx.source_title = browser_info.get("page_title", "")
+                ctx.source_url = browser_info.get("url", "")
+                ctx.source_domain = browser_info.get("domain", "")
+                ctx.source_meta = browser_info
+            return ctx
+
+        # 3. Clipboard fallback (non-destructive)
+        text, paths = clipboard_fallback()
         if paths:
             return _path_context(app, paths)
+        if _looks_like_address_bar(text):
+            return CapturedContext(source_app=browser_info.get("browser", app), capture_method=CaptureMethod.NONE, raw_content="",
+                                   paths=[], note="address bar was copied — click into the page text and reselect")
+        if text.strip():
+            ctx = CapturedContext(
+                source_app=browser_info.get("browser", app),
+                capture_method=CaptureMethod.CLIPBOARD_FALLBACK,
+                raw_content=text,
+            )
+            if browser_info:
+                ctx.source_title = browser_info.get("page_title", "")
+                ctx.source_url = browser_info.get("url", "")
+                ctx.source_domain = browser_info.get("domain", "")
+                ctx.source_meta = browser_info
+            return ctx
 
-    # Detect if foreground window is a browser
-    is_browser = app.lower() in BROWSER_PROCESSES or any(win_title.endswith(s) for s in BROWSER_TITLE_SUFFIXES)
-    browser_info = build_browser_context(hwnd, app, win_title) if is_browser else {}
-
-    # 2. UI Automation
-    text = uia_selected_text()
-    if _looks_like_address_bar(text):
-        text = ""  # focus in browser address bar; fall back
-    if text.strip():
-        ctx = CapturedContext(
-            source_app=browser_info.get("browser", app),
-            capture_method=CaptureMethod.TEXT_SELECTION,
-            raw_content=text,
-        )
-        if browser_info:
-            ctx.source_title = browser_info.get("page_title", "")
-            ctx.source_url = browser_info.get("url", "")
-            ctx.source_domain = browser_info.get("domain", "")
-            ctx.source_meta = browser_info
-        return ctx
-
-    # 3. Clipboard fallback
-    text, paths = clipboard_fallback()
-    if paths:
-        return _path_context(app, paths)
-    if _looks_like_address_bar(text):
-        return CapturedContext(source_app=browser_info.get("browser", app), capture_method=CaptureMethod.NONE, raw_content="",
-                               paths=[], note="address bar was copied — click into the page text and reselect")
-    if text.strip():
-        ctx = CapturedContext(
-            source_app=browser_info.get("browser", app),
-            capture_method=CaptureMethod.CLIPBOARD_FALLBACK,
-            raw_content=text,
-        )
-        if browser_info:
-            ctx.source_title = browser_info.get("page_title", "")
-            ctx.source_url = browser_info.get("url", "")
-            ctx.source_domain = browser_info.get("domain", "")
-            ctx.source_meta = browser_info
-        return ctx
-
-    return CapturedContext(source_app=browser_info.get("browser", app), capture_method=CaptureMethod.NONE, raw_content="")
+        return CapturedContext(source_app=browser_info.get("browser", app), capture_method=CaptureMethod.NONE, raw_content="")
+    finally:
+        uninit_com_for_thread()
 

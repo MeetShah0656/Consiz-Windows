@@ -19,6 +19,29 @@ from consiz.dictation import AudioRecorder, get_dictation_engine
 from consiz.models import CapturedContext, CaptureMethod
 from consiz.router import process, process_dictation
 
+_MUTEX_HANDLE = None
+
+
+def acquire_single_instance_lock() -> bool:
+    """Ensures only one instance of Consiz runs as a background listener (KI-16)."""
+    global _MUTEX_HANDLE
+    if sys.platform == "win32":
+        import ctypes
+        ERROR_ALREADY_EXISTS = 183
+        _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ConsizSingleInstanceMutex")
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            return False
+        return True
+    else:
+        try:
+            import fcntl
+            lock_path = "/tmp/consiz.lock"
+            _MUTEX_HANDLE = open(lock_path, "w")
+            fcntl.flock(_MUTEX_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (IOError, OSError):
+            return False
+
 
 def run_once(ctx: CapturedContext) -> None:
     output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} — processing…")
@@ -40,7 +63,11 @@ def run_terminal_dictation(ctx: CapturedContext) -> None:
     def on_auto_stop():
         done_event.set()
 
-    rec.start(on_auto_stop=on_auto_stop)
+    try:
+        rec.start(on_auto_stop=on_auto_stop)
+    except Exception as e:
+        output.notify(f"Microphone error: {e}")
+        return
 
     # Wait for Enter key or safety timeout
     def wait_for_enter():
@@ -162,6 +189,10 @@ def main() -> int:
         from consiz.capture import capture
         run_once(capture())
         return 0
+
+    if not acquire_single_instance_lock():
+        output.notify("Consiz is already running in another window/process. Only one instance can listen for triggers.")
+        return 1
 
     from consiz.trigger import Trigger
     trig = Trigger(

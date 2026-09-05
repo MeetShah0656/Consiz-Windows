@@ -45,6 +45,22 @@ class Trigger:
 
         threading.Thread(target=run, name="consiz-worker", daemon=True).start()
 
+    def _fire_dictate(self, source: str) -> None:
+        if self._on_dictate is None:
+            return
+        if not self._busy.acquire(blocking=False):
+            if self._on_busy:
+                self._on_busy()
+            return
+
+        def run():
+            try:
+                self._on_dictate(source)
+            finally:
+                self._busy.release()
+
+        threading.Thread(target=run, name="consiz-dictate-worker", daemon=True).start()
+
     # -- mouse
     def _on_click(self, x, y, button, pressed, *_):
         if button == mouse.Button.middle and pressed:      # fire on PRESS: earliest moment, selection still intact
@@ -64,8 +80,13 @@ class Trigger:
             ml.daemon = True
             ml.start()
             self._listeners.append(ml)
+        hotkeys = {}
         if CONFIG.hotkey:
-            hk = keyboard.GlobalHotKeys({CONFIG.hotkey: lambda: self._fire("hotkey")})
+            hotkeys[CONFIG.hotkey] = lambda: self._fire("hotkey")
+        if getattr(CONFIG, "dictate_hotkey", None) and self._on_dictate:
+            hotkeys[CONFIG.dictate_hotkey] = lambda: self._fire_dictate("dictate-hotkey")
+        if hotkeys:
+            hk = keyboard.GlobalHotKeys(hotkeys)
             hk.daemon = True
             hk.start()
             self._listeners.append(hk)

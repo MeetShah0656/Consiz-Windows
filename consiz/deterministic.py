@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 import os
+import re
+import sys
 import time
 from collections import Counter
 from datetime import datetime
@@ -276,9 +278,18 @@ def extract_text(path: str, limit: int) -> str | None:
             d = docx.Document(path)
             text = "\n".join(p.text for p in d.paragraphs if p.text.strip())
         elif ext in (".doc", ".rtf", ".odt", ".webarchive"):
-            import subprocess
-            r = subprocess.run(["textutil", "-convert", "txt", "-stdout", path], capture_output=True, text=True, timeout=10)
-            text = r.stdout if r.returncode == 0 else ""
+            if sys.platform == "darwin":
+                import subprocess
+                r = subprocess.run(["textutil", "-convert", "txt", "-stdout", path], capture_output=True, text=True, timeout=10)
+                text = r.stdout if r.returncode == 0 else ""
+            elif ext == ".rtf":
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    raw_rtf = fh.read(limit * 4)
+                text = re.sub(r"\\[a-zA-Z]+(-?\d+)? ?", " ", raw_rtf)
+                text = re.sub(r"[{}]", "", text)
+                text = re.sub(r"\s+", " ", text).strip()
+            else:
+                text = ""
         elif ext in (".xlsx", ".xls"):
             df = pd.read_excel(path, nrows=15)
             text = f"columns: {', '.join(map(str, df.columns))}\n" + df.head(10).to_string(index=False)
