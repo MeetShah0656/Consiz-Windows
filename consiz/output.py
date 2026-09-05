@@ -8,6 +8,19 @@ from .config import CONFIG
 from .llm import KIND_TITLES, LLMError
 from .models import Result
 
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 
 def _c(code: str, s: str) -> str:
     return f"\033[{code}m{s}\033[0m" if CONFIG.color else s

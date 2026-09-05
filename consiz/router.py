@@ -45,13 +45,37 @@ def process(ctx: CapturedContext) -> Result:
         elif cls.content_type == ContentType.CSV_DATA:
             r = _csv(ctx, cls, content)
         else:
-            # Text or question: let the model decide the user's intent (answer / explain / summarize / define / code / math).
-            hint = llm.intent_hint(content, cls.content_type.value)
-            r = Result(title="auto", content_type=cls.content_type.value, stream=llm.stream("auto", content, hint))
+            # Check if this text selection came from a browser with website context
+            has_web_context = bool(ctx.source_domain or ctx.source_url or (ctx.source_title and any(b in app.lower() for b in ("chrome", "edge", "firefox", "brave", "opera", "vivaldi"))))
+            if has_web_context:
+                domain_badge = ctx.source_domain or "Web"
+                page_badge = ctx.source_title or ""
+                header_badge = f"🌐 {domain_badge} · {page_badge[:36]}" if page_badge else f"🌐 {domain_badge}"
+
+                web_context_lines = [
+                    f"Source Website: {domain_badge}",
+                ]
+                if page_badge:
+                    web_context_lines.append(f"Webpage Title: {page_badge}")
+                if ctx.source_url:
+                    web_context_lines.append(f"URL: {ctx.source_url}")
+                if ctx.source_meta and ctx.source_meta.get("site_context"):
+                    web_context_lines.append(f"Site Context: {ctx.source_meta['site_context']}")
+                web_context_lines.append("\n--- Selected Passage ---\n" + content)
+
+                llm_input = "\n".join(web_context_lines)
+                hint = f"Text selected from {domain_badge} while reading '{page_badge or domain_badge}'. Build website context first, then analyze/explain."
+                r = Result(title="auto", content_type=cls.content_type.value, stream=llm.stream("web_context_selection", llm_input, hint))
+                app = header_badge
+            else:
+                # Text or question: let the model decide the user's intent (answer / explain / summarize / define / code / math).
+                hint = llm.intent_hint(content, cls.content_type.value)
+                r = Result(title="auto", content_type=cls.content_type.value, stream=llm.stream("auto", content, hint))
     except ValueError as e:
         return error_result(ErrorState.DATA_MALFORMED, str(e), app)
 
-    r.source_app = app
+    if not r.source_app:
+        r.source_app = app
     if not r.source_content:
         r.source_content = content if cls.content_type in (ContentType.TEXT_SELECTION, ContentType.QUESTION) else r.body
     r.warnings = warnings + r.warnings
@@ -91,14 +115,15 @@ def _folder(ctx: CapturedContext, cls) -> Result:
                       stream=llm.stream("folder_overview", "The user selected these items together in Finder:\n" + body))
     md = det.folder_metadata(ctx.raw_content)
     body = det.format_folder(md)
-    # AI narrative: what this folder is likely about, from names + the first paragraphs of a few files
-    llm_input = body
-    if md["previews"]:
-        llm_input += "\n\n--- beginning of some files inside ---\n"
-        for name, txt in md["previews"]:
-            txt, _ = redact(txt)
-            llm_input += f"\n[{name}]\n{txt}\n"
-    return Result(title="Folder", content_type="FOLDER", body=body, stream=llm.stream("folder_overview", llm_input))
+    # Build complete multi-folder and subfolder document dossier
+    dossier = det.build_folder_llm_context(md)
+    if CONFIG.redact_sensitive:
+        dossier, _ = redact(dossier)
+    folder_badge = f"📁 {md['name']} · {md['folders']} subfolders · {md['files']} files"
+    r = Result(title="Folder Analysis", content_type="FOLDER", source_app=folder_badge, body=body,
+               stream=llm.stream("folder_overview", dossier))
+    r.source_content = dossier
+    return r
 
 
 def _file(ctx: CapturedContext) -> Result:
@@ -126,4 +151,95 @@ def _csv(ctx: CapturedContext, cls, content: str) -> Result:
     r = Result(title="Data", content_type="CSV_DATA", body=body, warnings=list(num.warnings),
                stream=llm.stream("data_summary", body + "\n\nfull profile (JSON):\n" + llm.stats_to_content(num.computed_stats)))
     r.on_complete = lambda text: check_numbers(text, num.computed_stats)   # grounding check after narrative
+    return r
+
+
+def process_dictation(ctx: CapturedContext, instruction: Any, language_name: str = "") -> Result:
+    """Process selected context according to a voice-dictated instruction with language detection."""
+    from typing import Any
+    t0 = time.perf_counter()
+    app = ctx.source_app
+
+    if hasattr(instruction, "language_name") and hasattr(instruction, "text"):
+        detected_lang = instruction.language_name
+        clean_inst = instruction.text.strip()
+    else:
+        detected_lang = language_name or "English"
+        clean_inst = str(instruction).strip()
+
+    if not clean_inst:
+        return error_result(ErrorState.AMBIGUOUS_SELECTION, "No voice instruction was detected. Please try dictating again.", app)
+
+    if ctx.is_empty:
+        hint = f" ({ctx.note})" if ctx.note else ""
+        return error_result(ErrorState.NO_CONTEXT_FOUND, f"No text was selected{hint}. Select text first, then dictate what to do.", app)
+
+    content = ctx.raw_content
+    warnings: list[str] = []
+    if CONFIG.redact_sensitive:
+        content, found = redact(content)
+        if found:
+            warnings.append("redacted before processing: " + ", ".join(found))
+
+    # Check for direct action commands (multilingual)
+    low_inst = clean_inst.lower()
+    copy_commands = (
+        "copy", "copy this", "copy that", "copy to clipboard",
+        "copiar", "copia esto", "copia",
+        "copier", "copie ceci",
+        "kopieren", "kopiere das",
+        "कॉपी", "कॉपी करो", "copy karo", "copy kar do",
+    )
+    if low_inst in copy_commands:
+        copied = False
+        try:
+            import win32clipboard
+            import win32con
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(content, win32con.CF_UNICODETEXT)
+            win32clipboard.CloseClipboard()
+            copied = True
+        except Exception:
+            try:
+                import tkinter as tk
+                root = tk.Tk()
+                root.withdraw()
+                root.clipboard_clear()
+                root.clipboard_append(content)
+                root.update()
+                root.destroy()
+                copied = True
+            except Exception as e:
+                warnings.append(f"Clipboard action failed: {e}")
+
+        if copied:
+            return Result(
+                title="Action Completed",
+                content_type="ACTION",
+                source_app=app,
+                body=f"✓ Copied selected text to clipboard ({len(content)} characters).",
+                started_at=t0,
+            )
+
+    msgs = llm.dictate_messages(content, clean_inst, language_name=detected_lang)
+    stream = llm.stream_messages(msgs)
+
+    if detected_lang and detected_lang.lower() != "english":
+        lang_prefix = f"[{detected_lang}] "
+        max_chars = 34
+    else:
+        lang_prefix = ""
+        max_chars = 40
+
+    disp_title = f"🎙 {lang_prefix}\"{clean_inst[:max_chars]}...\"" if len(clean_inst) > max_chars else f"🎙 {lang_prefix}\"{clean_inst}\""
+    r = Result(
+        title=disp_title,
+        content_type=f"VOICE ({detected_lang}) · {ctx.capture_method.value.lower()}",
+        source_app=app,
+        stream=stream,
+        source_content=content,
+        warnings=warnings,
+        started_at=t0,
+    )
     return r

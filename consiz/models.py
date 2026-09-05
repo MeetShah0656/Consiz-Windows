@@ -42,6 +42,10 @@ class CapturedContext:
     paths: list[str] = field(default_factory=list)   # all selected paths (Finder multi-select)
     note: str = ""                                    # capture-layer hint shown with NO_CONTEXT_FOUND
     timestamp: datetime = field(default_factory=datetime.now)
+    source_title: str = ""                            # e.g., page title or window title
+    source_url: str = ""                              # e.g., webpage URL
+    source_domain: str = ""                           # e.g., website domain (wikipedia.org)
+    source_meta: dict[str, Any] = field(default_factory=dict)  # additional site/folder context
 
     @property
     def size_bytes(self) -> int:

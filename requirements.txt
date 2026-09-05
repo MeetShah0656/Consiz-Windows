@@ -1,7 +1,4 @@
 pynput
-pyobjc-framework-Cocoa
-pyobjc-framework-Quartz
-pyobjc-framework-ApplicationServices
 requests
 python-dotenv
 pandas
@@ -9,3 +6,10 @@ openpyxl
 pypdf
 python-docx
 pytest
+pywin32; sys_platform == 'win32'
+uiautomation; sys_platform == 'win32'
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+pyobjc-framework-ApplicationServices; sys_platform == 'darwin'
+sounddevice
+faster-whisper

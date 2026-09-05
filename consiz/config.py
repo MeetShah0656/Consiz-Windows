@@ -43,6 +43,19 @@ class Config:
     # --- Profile (personal assistant knowledge) ---
     profile_path: str = str(Path(__file__).resolve().parent.parent / "profile.md")
 
+    # --- Dictation & Voice (faster-whisper) ---
+    dictate_hotkey: str = os.environ.get("CONSIZ_DICTATE_HOTKEY", "<ctrl>+<alt>+d")
+    whisper_model: str = os.environ.get("WHISPER_MODEL", "small")
+    whisper_device: str = os.environ.get("WHISPER_DEVICE", "cpu")
+    whisper_compute_type: str = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+    whisper_language: Optional[str] = os.environ.get("WHISPER_LANGUAGE", None)
+    whisper_detection_segments: int = int(os.environ.get("WHISPER_DETECTION_SEGMENTS", "3"))
+    dictate_sample_rate: int = 16000
+    dictate_silence_threshold: float = 0.015
+    dictate_silence_duration_s: float = 1.2
+    dictate_auto_stop_on_silence: bool = os.environ.get("CONSIZ_DICTATE_AUTO_STOP", "").lower() in ("1", "true", "yes")
+    dictate_max_duration_s: float = float(os.environ.get("CONSIZ_DICTATE_MAX_DURATION", "120.0"))
+
     # --- Output ---
     stream: bool = True
     color: bool = True

@@ -29,14 +29,96 @@ def _fmt_time(ts: float) -> str:
 
 
 # ---------------------------------------------------------------- folders
+# Directories to skip when scanning recursively (heavy/vendor/cache/build directories)
+_SKIP_DIRS = {
+    ".git", ".svn", ".hg", "node_modules", "venv", ".venv", "env", ".env",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "dist", "build", "target", "out", ".next", ".nuxt", ".cache",
+    ".idea", ".vscode", ".vs", "obj", "bin", "vendor", "pods"
+}
+
+
+def _folder_previews_deep(path: str, all_files_rel: list[str], limit: int = 10, chars: int = 700) -> list[tuple[str, str]]:
+    """Inspects documents throughout root and all subfolders to build an exhaustive content understanding."""
+    def doc_priority(rel_name: str) -> tuple:
+        n = os.path.basename(rel_name).lower()
+        parts = rel_name.replace("\\", "/").split("/")
+        is_root = len(parts) == 1
+        is_doc_dir = any(p.lower() in ("docs", "doc", "documentation", "guide", "spec", "specs") for p in parts)
+
+        # Priority tier:
+        if n.startswith("readme"):
+            tier = 0
+        elif n.startswith(("architecture", "contributing", "design", "overview", "index")):
+            tier = 1
+        elif is_doc_dir and n.endswith((".md", ".txt", ".rst", ".pdf", ".docx")):
+            tier = 2
+        elif n in ("package.json", "pyproject.toml", "requirements.txt", "cargo.toml", "go.mod", "pom.xml", ".env.example"):
+            tier = 3
+        elif is_root and n.endswith((".md", ".txt", ".rst")):
+            tier = 4
+        elif n.endswith((".md", ".txt", ".rst", ".pdf", ".docx")):
+            tier = 5
+        elif n in ("main.py", "app.py", "index.ts", "index.js", "server.js", "lib.rs", "main.go"):
+            tier = 6
+        elif n.endswith((".py", ".js", ".ts", ".jsx", ".tsx", ".rs", ".go", ".csv")):
+            tier = 7
+        else:
+            tier = 8
+        return (tier, 0 if is_root else 1, len(parts), n)
+
+    sorted_files = sorted(all_files_rel, key=doc_priority)
+    out: list[tuple[str, str]] = []
+    seen_subfolders: set[str] = set()
+
+    for rel in sorted_files:
+        if len(out) >= limit:
+            break
+        full_path = os.path.join(path, rel)
+        if not os.path.isfile(full_path):
+            continue
+        parts = rel.replace("\\", "/").split("/")
+        subfolder_key = parts[0] if len(parts) > 1 else ""
+
+        # Avoid pulling all files from the exact same subfolder if other subfolders exist
+        if subfolder_key and subfolder_key in seen_subfolders and len(seen_subfolders) < 4 and len(out) >= 4:
+            continue
+
+        txt = extract_text(full_path, chars)
+        if txt and txt.strip():
+            out.append((rel.replace("\\", "/"), txt))
+            if subfolder_key:
+                seen_subfolders.add(subfolder_key)
+
+    return out
+
+
 def folder_metadata(path: str) -> dict:
     files, dirs, total, exts = 0, 0, 0, Counter()
     largest: list[tuple[int, str]] = []
     newest: list[tuple[float, str]] = []
     truncated = False
     count = 0
+
+    all_files_rel: list[str] = []
+    subfolder_map: dict[str, list[str]] = {}
+    skipped_folders: list[str] = []
+
     for root, dnames, fnames in os.walk(path):
+        # Prune heavy/cache/vendor directories
+        filtered_dirs = []
+        for d in dnames:
+            if d in _SKIP_DIRS or (d.startswith(".") and d != "."):
+                skipped_folders.append(d)
+            else:
+                filtered_dirs.append(d)
+        dnames[:] = filtered_dirs
         dirs += len(dnames)
+
+        rel_root = os.path.relpath(root, path)
+        if rel_root != ".":
+            subfolder_map[rel_root] = []
+
         for f in fnames:
             count += 1
             if count > CONFIG.folder_max_entries:
@@ -49,11 +131,18 @@ def folder_metadata(path: str) -> dict:
                 continue
             files += 1
             total += st.st_size
-            exts[os.path.splitext(f)[1].lower() or "(none)"] += 1
-            largest.append((st.st_size, os.path.relpath(fp, path)))
-            newest.append((st.st_mtime, os.path.relpath(fp, path)))
+            ext = os.path.splitext(f)[1].lower() or "(none)"
+            exts[ext] += 1
+            rel_file = os.path.relpath(fp, path)
+            largest.append((st.st_size, rel_file))
+            newest.append((st.st_mtime, rel_file))
+            all_files_rel.append(rel_file)
+            if rel_root != ".":
+                subfolder_map[rel_root].append(f)
+
         if truncated:
             break
+
     largest.sort(reverse=True)
     newest.sort(reverse=True)
     st = os.stat(path)
@@ -64,33 +153,32 @@ def folder_metadata(path: str) -> dict:
     direct_files = [e for e in entries if os.path.isfile(os.path.join(path, e))]
     direct_dirs = [e for e in entries if os.path.isdir(os.path.join(path, e))]
     top_level = entries[:25]
+
+    # Detailed inventory of subfolders with file counts and top extensions
+    subfolders_tree: list[dict] = []
+    for s_path, s_files in sorted(subfolder_map.items()):
+        s_exts = Counter(os.path.splitext(f)[1].lower() for f in s_files if "." in f)
+        subfolders_tree.append({
+            "rel_path": s_path.replace("\\", "/"),
+            "file_count": len(s_files),
+            "top_exts": [e for e, _ in s_exts.most_common(3)],
+            "sample_files": s_files[:5],
+        })
+
     return {
         "path": path, "name": os.path.basename(path) or path,
         "created": _fmt_time(getattr(st, "st_birthtime", st.st_ctime)), "modified": _fmt_time(st.st_mtime),
         "direct_files": len(direct_files), "direct_folders": len(direct_dirs), "subfolders": direct_dirs[:15],
         "files": files, "folders": dirs, "total_size": human_size(total),
-        "previews": _folder_previews(path, direct_files),
+        "previews": _folder_previews_deep(path, all_files_rel),
+        "subfolders_tree": subfolders_tree,
+        "skipped_folders": list(set(skipped_folders))[:6],
         "top_extensions": exts.most_common(6),
         "largest": [(human_size(s), n) for s, n in largest[:5]],
         "newest": [(_fmt_time(t), n) for t, n in newest[:5]],
         "top_level": top_level,
         "truncated": truncated,
     }
-
-
-def _folder_previews(path: str, direct_files: list[str], limit: int = 3, chars: int = 700) -> list[tuple[str, str]]:
-    """Short text previews of up to `limit` readable files, README-style files first — so the LLM can say what's inside."""
-    def prio(name: str) -> tuple:
-        n = name.lower()
-        return (0 if n.startswith("readme") else 1 if n.startswith(("00", "index", "start")) else 2, n)
-    out: list[tuple[str, str]] = []
-    for name in sorted(direct_files, key=prio):
-        if len(out) >= limit:
-            break
-        txt = extract_text(os.path.join(path, name), chars)
-        if txt:
-            out.append((name, txt))
-    return out
 
 
 def _short(name: str, n: int = 34) -> str:
@@ -100,19 +188,26 @@ def _short(name: str, n: int = 34) -> str:
 def format_folder(md: dict) -> str:
     lines = [f"📁 {md['name']}",
              f"Created {md['created']} · Modified {md['modified']}",
-             f"Inside: {md['direct_files']} files, {md['direct_folders']} folders"
-             + (f" · all levels: {md['files']} files, {md['total_size']}"
-                if (md['files'], md['folders']) != (md['direct_files'], md['direct_folders']) else f" · {md['total_size']}")
+             f"Inside: {md['direct_files']} direct files, {md['direct_folders']} direct folders · {md['files']} total files across {md['folders']} subfolders ({md['total_size']})"
              + (" (scan capped)" if md["truncated"] else "")]
     if md["top_extensions"]:
         lines.append("Types: " + ", ".join(f"{e} ×{c}" for e, c in md["top_extensions"][:4]))
-    if md["subfolders"]:
+    if md.get("subfolders_tree"):
+        lines.append("Subfolders:")
+        for sf in md["subfolders_tree"][:6]:
+            exts_str = f" ({', '.join(sf['top_exts'])})" if sf["top_exts"] else ""
+            lines.append(f"   📁 {sf['rel_path']}/ — {sf['file_count']} files{exts_str}")
+        if len(md["subfolders_tree"]) > 6:
+            lines.append(f"   … +{len(md['subfolders_tree']) - 6} more subfolders")
+    elif md["subfolders"]:
         lines.append("Folders: " + ", ".join(_short(n, 24) for n in md["subfolders"][:6])
                      + (f" +{md['direct_folders'] - 6} more" if md['direct_folders'] > 6 else ""))
-    files_shown = [n for n in md["top_level"] if n not in md["subfolders"]][:6]
-    if files_shown:
-        lines.append("Files: " + ", ".join(_short(n, 24) for n in files_shown)
-                     + (f" +{md['direct_files'] - len(files_shown)} more" if md['direct_files'] > len(files_shown) else ""))
+
+    # Key documents across subfolders
+    if md.get("previews"):
+        doc_names = [name for name, _ in md["previews"][:5]]
+        lines.append("Key Documents: " + " · ".join(_short(n, 28) for n in doc_names))
+
     if md["largest"]:
         lines.append("Largest:")
         lines += [f"   {_short(n)}  ({sz})" for sz, n in md["largest"][:3]]
@@ -120,6 +215,39 @@ def format_folder(md: dict) -> str:
         lines.append("Recently changed:")
         lines += [f"   {_short(n)}  ({t})" for t, n in md["newest"][:3]]
     return "\n".join(lines)
+
+
+def build_folder_llm_context(md: dict) -> str:
+    """Builds comprehensive architectural dossier for the LLM covering all subfolders and documents."""
+    sections = [
+        f"Folder / Project: {md['name']}",
+        f"Location: {md['path']}",
+        f"Total Size: {md['total_size']} across {md['files']} files and {md['folders']} subfolders",
+    ]
+    if md.get("top_extensions"):
+        sections.append("Predominant File Formats: " + ", ".join(f"{e} ({c} files)" for e, c in md["top_extensions"]))
+
+    if md.get("subfolders_tree"):
+        sf_lines = ["--- Subfolder Architecture & Directory Tree ---"]
+        for sf in md["subfolders_tree"][:15]:
+            exts_str = f" [types: {', '.join(sf['top_exts'])}]" if sf["top_exts"] else ""
+            samples = f" (e.g. {', '.join(sf['sample_files'][:3])})" if sf["sample_files"] else ""
+            sf_lines.append(f"• {sf['rel_path']}/: {sf['file_count']} files{exts_str}{samples}")
+        if len(md["subfolders_tree"]) > 15:
+            sf_lines.append(f"• … +{len(md['subfolders_tree']) - 15} additional nested subfolders")
+        sections.append("\n".join(sf_lines))
+
+    if md.get("skipped_folders"):
+        sections.append("Dependency / Build Directories detected: " + ", ".join(md["skipped_folders"]))
+
+    if md.get("previews"):
+        doc_lines = ["--- Key Documents & File Contents Across Subfolders ---"]
+        for name, txt in md["previews"]:
+            doc_lines.append(f"\nDocument [{name}]:\n{txt}")
+        sections.append("\n".join(doc_lines))
+
+    return "\n\n".join(sections)
+
 
 
 # ---------------------------------------------------------------- files

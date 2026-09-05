@@ -10,17 +10,59 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 
 from consiz import llm, output
 from consiz.config import CONFIG
+from consiz.dictation import AudioRecorder, get_dictation_engine
 from consiz.models import CapturedContext, CaptureMethod
-from consiz.router import process
+from consiz.router import process, process_dictation
 
 
 def run_once(ctx: CapturedContext) -> None:
     output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} — processing…")
     output.render(process(ctx))
+
+
+def run_terminal_dictation(ctx: CapturedContext) -> None:
+    engine = get_dictation_engine()
+    rec = AudioRecorder(
+        sample_rate=CONFIG.dictate_sample_rate,
+        silence_threshold=CONFIG.dictate_silence_threshold,
+        silence_duration_s=CONFIG.dictate_silence_duration_s,
+        max_duration_s=CONFIG.dictate_max_duration_s,
+    )
+    output.notify("🎙 Listening... Speak your command for the selected text (press Enter when finished):")
+
+    done_event = threading.Event()
+
+    def on_auto_stop():
+        done_event.set()
+
+    rec.start(on_auto_stop=on_auto_stop)
+
+    # Wait for Enter key or safety timeout
+    def wait_for_enter():
+        try:
+            input()
+        except Exception:
+            pass
+        done_event.set()
+
+    t = threading.Thread(target=wait_for_enter, daemon=True)
+    t.start()
+    done_event.wait(timeout=CONFIG.dictate_max_duration_s)
+
+    audio = rec.stop()
+    output.notify("⚡ Transcribing with faster-whisper…")
+    res = engine.transcribe(audio)
+    if not res.text:
+        output.notify("No speech detected.")
+        return
+    output.notify(f"🎙 Dictated ({res.language_name} ~{res.language_probability:.0%}): \"{res.text}\" — processing…")
+    result = process_dictation(ctx, res)
+    output.render(result)
 
 
 POPUP = None
@@ -38,19 +80,42 @@ def on_trigger(source: str) -> None:
         output.render(res)
 
 
+def on_dictate_trigger(source: str) -> None:
+    from consiz.capture import capture
+    output.notify(f"dictate trigger: {source}")
+    if POPUP is not None and getattr(POPUP, "_is_dictating", False):
+        output.notify("🎙 Stopping dictation on toggle…")
+        POPUP.stop_dictation()
+        return
+    ctx = capture()
+    output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} — starting dictation…")
+    if POPUP is not None:
+        POPUP.start_dictation_flow(ctx)
+    else:
+        run_terminal_dictation(ctx)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="As Conciz terminal MVP")
     ap.add_argument("--text", help="process this text instead of listening")
     ap.add_argument("--path", help="process this file/folder instead of listening")
     ap.add_argument("--capture", action="store_true", help="capture current selection once, process, exit")
+    ap.add_argument("--dictate", action="store_true", help="start dictation immediately on text or current selection")
+    ap.add_argument("--whisper-model", default=None, help="faster-whisper model size (e.g. tiny.en, base.en, small.en)")
+    ap.add_argument("--dictate-hotkey", default=CONFIG.dictate_hotkey, help="keyboard shortcut for dictation")
     ap.add_argument("--provider", choices=["openrouter", "ollama"], default=CONFIG.provider)
     ap.add_argument("--model", default=None, help="override model id for the chosen provider")
     ap.add_argument("--no-stream", action="store_true")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--terminal", action="store_true", help="print results in the terminal instead of the popup window")
     ap.add_argument("--hotkey", default=CONFIG.hotkey, help="keyboard fallback, pynput syntax (e.g. '<ctrl>+<alt>+s')")
+    ap.add_argument("--elevate", action="store_true", help="re-launch with elevated Administrator privileges on Windows")
     args = ap.parse_args()
     CONFIG.provider, CONFIG.hotkey = args.provider, args.hotkey
+    if args.dictate_hotkey:
+        CONFIG.dictate_hotkey = args.dictate_hotkey
+    if args.whisper_model:
+        CONFIG.whisper_model = args.whisper_model
     if args.model:
         if args.provider == "ollama":
             CONFIG.ollama_model = args.model
@@ -58,8 +123,31 @@ def main() -> int:
             CONFIG.openrouter_model = args.model
     CONFIG.stream, CONFIG.color = not args.no_stream, not args.no_color
 
+    if sys.platform == "win32":
+        from consiz.platform.win32.priority import is_admin, request_admin_elevation, set_high_priority
+        if args.elevate and not is_admin():
+            request_admin_elevation()
+        set_high_priority()
+        admin_status = "Admin ✓ (Top Priority)" if is_admin() else "Standard User"
+        output.notify(f"Windows Integrity: {admin_status}")
+
     ok, msg = llm.health()
     output.notify(("✓ " if ok else "✗ ") + msg)
+
+    # Pre-warm faster-whisper model in background
+    get_dictation_engine().warmup()
+
+    if args.dictate:
+        if args.text is not None:
+            ctx = CapturedContext("cli", CaptureMethod.TEXT_SELECTION, args.text)
+        elif args.capture:
+            from consiz.capture import capture
+            ctx = capture()
+        else:
+            from consiz.capture import capture
+            ctx = capture()
+        run_terminal_dictation(ctx)
+        return 0
 
     if args.text is not None:
         run_once(CapturedContext("cli", CaptureMethod.TEXT_SELECTION, args.text))
@@ -76,11 +164,16 @@ def main() -> int:
         return 0
 
     from consiz.trigger import Trigger
-    trig = Trigger(on_trigger, on_busy=lambda: output.notify("still working on the previous request — wait a moment"))
+    trig = Trigger(
+        on_trigger,
+        on_busy=lambda: output.notify("still working on the previous request — wait a moment"),
+        on_dictate=on_dictate_trigger,
+    )
     trig.start()
     where = "in the terminal" if args.terminal else "in a popup next to your selection"
-    print(output._c("1", "As Conciz") + " — select anything, then press the "
-          + output._c("1", "middle mouse button") + f" (or {CONFIG.hotkey}). Result appears {where}. Ctrl+C to quit.")
+    print(output._c("1", "As Conciz") + " — select anything, then press "
+          + output._c("1", "middle mouse") + f" (or {CONFIG.hotkey}) to explain, or "
+          + output._c("1", f"{CONFIG.dictate_hotkey}") + f" to dictate. Result appears {where}. Ctrl+C to quit.", flush=True)
     global POPUP
     if args.terminal:
         try:
@@ -99,7 +192,14 @@ def main() -> int:
         msgs = llm.followup_messages(POPUP.context, POPUP.last_answer, question)
         POPUP.show_followup(question, llm.stream_messages(msgs))
 
+    def dictate_handler(ctx: CapturedContext, instruction) -> None:
+        lang_str = f" [{instruction.language_name}]" if hasattr(instruction, "language_name") else ""
+        output.notify(f"voice instruction{lang_str}: {instruction}")
+        res = process_dictation(ctx, instruction)
+        POPUP.show_result(res)
+
     POPUP.on_ask = ask_handler
+    POPUP.on_dictate = dictate_handler
     try:
         run_app_loop()
     except KeyboardInterrupt:
