@@ -7,7 +7,92 @@ from typing import Optional
 from dotenv import load_dotenv
 
 # API keys live in <project>/.env (never committed). Loaded once here; nothing else reads files for secrets.
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+PROJECT_ENV = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(PROJECT_ENV)
+
+
+def ensure_env_template() -> tuple[Path, bool]:
+    """Create <project>/.env from .env.example if it doesn't exist yet. Returns (path, just_created)."""
+    if PROJECT_ENV.exists():
+        return PROJECT_ENV, False
+    example = Path(__file__).resolve().parent.parent / ".env.example"
+    try:
+        template = example.read_text(encoding="utf-8")
+    except OSError:
+        template = "OPENROUTER_API_KEY=sk-or-v1-paste-your-key-here\n"
+    PROJECT_ENV.write_text(
+        "# Consiz settings — paste your OpenRouter key below, then save this file and restart Consiz.\n"
+        "# Get a free key at: https://openrouter.ai/keys\n\n" + template,
+        encoding="utf-8",
+    )
+    return PROJECT_ENV, True
+
+
+def set_openrouter_key(key: str) -> None:
+    """Write (or replace) OPENROUTER_API_KEY in .env and reload it live — no restart needed, since the
+    key is also written directly into os.environ so _api_key() in llm.py picks it up immediately."""
+    import re
+    ensure_env_template()
+    text = PROJECT_ENV.read_text(encoding="utf-8")
+    line = f"OPENROUTER_API_KEY={key}"
+    if re.search(r"(?m)^OPENROUTER_API_KEY=", text):
+        text = re.sub(r"(?m)^OPENROUTER_API_KEY=.*$", line, text)
+    else:
+        text = text.rstrip("\n") + f"\n{line}\n"
+    PROJECT_ENV.write_text(text, encoding="utf-8")
+    os.environ["OPENROUTER_API_KEY"] = key   # live update — no restart needed
+    load_dotenv(PROJECT_ENV, override=True)
+
+
+_PROFILE_TEMPLATE = """# My Profile — Consiz uses this to answer AS YOUR ASSISTANT
+# Edit freely. Delete anything you don't want the AI to know.
+# It is used ONLY when relevant (drafting replies, quotes, advice for you) —
+# never for neutral tasks like summarizing an article.
+
+## Who I am
+Name:
+Profession: (e.g. CA student / CA / accountant / business owner / student)
+City:
+
+## Why I use Consiz
+
+
+## My work / business
+What I do:
+Company name:
+What we sell / services:
+
+## My pricing (used when drafting quotes — leave empty and Consiz will refuse to invent prices)
+Example: Logo design — ₹5,000 · Website — ₹40,000 · Consulting — ₹2,000/hour
+
+## How I like replies written
+Tone: (e.g. polite, short, professional, Hinglish ok)
+Sign-off: (e.g. Regards, Hitarth)
+"""
+
+
+def save_profile_basics(name: str, profession: str, reason: str) -> None:
+    """Write the onboarding wizard's three answers into the profile's existing fields (never invents new
+    ones — 'Name:', 'Profession:' and '## Why I use Consiz' already exist in the template above, so this
+    is filling in blanks the file already expects, not a new format)."""
+    import re
+    path = Path(CONFIG.profile_path)
+    if not path.exists():
+        path.write_text(_PROFILE_TEMPLATE, encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    if name.strip():
+        text = re.sub(r"(?m)^Name:.*$", f"Name: {name.strip()}", text, count=1)
+    if profession.strip():
+        text = re.sub(r"(?m)^Profession:.*$", f"Profession: {profession.strip()}", text, count=1)
+    if reason.strip():
+        heading = re.search(r"(?m)^## Why I use Consiz[ \t]*$", text)
+        if heading:
+            next_heading = re.search(r"(?m)^## ", text[heading.end():])
+            body_end = heading.end() + next_heading.start() if next_heading else len(text)
+            text = text[:heading.start()] + f"## Why I use Consiz\n{reason.strip()}\n\n" + text[body_end:]
+        else:
+            text = text.rstrip("\n") + f"\n\n## Why I use Consiz\n{reason.strip()}\n"
+    path.write_text(text, encoding="utf-8")
 
 
 @dataclass

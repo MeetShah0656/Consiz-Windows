@@ -234,6 +234,12 @@ def main() -> int:
 
     POPUP.on_ask = ask_handler
     POPUP.on_dictate = dictate_handler
+
+    from consiz import prefs
+    if not prefs.get("onboarding_completed"):
+        from consiz.platform.win32.onboarding import open_onboarding
+        open_onboarding()
+
     try:
         run_app_loop()
     except KeyboardInterrupt:
