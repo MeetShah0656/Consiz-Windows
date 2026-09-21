@@ -195,16 +195,19 @@ def main() -> int:
         return 1
 
     from consiz.trigger import Trigger
+    # Dictation hotkey temporarily disabled (not yet part of the shared Mac feature
+    # set — see As-Conciz/20-For-Meet-What-Consiz-Does-Today-Plain-Words.md). Backend
+    # (on_dictate_trigger, run_terminal_dictation, consiz/dictation.py) is untouched —
+    # passing on_dictate=on_dictate_trigger here re-enables it.
     trig = Trigger(
         on_trigger,
         on_busy=lambda: output.notify("still working on the previous request — wait a moment"),
-        on_dictate=on_dictate_trigger,
     )
     trig.start()
     where = "in the terminal" if args.terminal else "in a popup next to your selection"
     print(output._c("1", "As Conciz") + " — select anything, then press "
-          + output._c("1", "middle mouse") + f" (or {CONFIG.hotkey}) to explain, or "
-          + output._c("1", f"{CONFIG.dictate_hotkey}") + f" to dictate. Result appears {where}. Ctrl+C to quit.", flush=True)
+          + output._c("1", "middle mouse") + f" (or {CONFIG.hotkey}) to explain. "
+          + f"Result appears {where}. Ctrl+C to quit.", flush=True)
     global POPUP
     if args.terminal:
         try:

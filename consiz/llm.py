@@ -175,7 +175,15 @@ def _api_key() -> str:
 
 
 # ---------------------------------------------------------------- OpenRouter
-def _stream_openrouter(task: str, content: str, hint: str = "") -> Iterator[str]:
+# Reasoning policy sent to OpenRouter. Hidden thinking is billed against max_tokens even when excluded
+# from the output, so we ask the provider to switch it OFF; if a model cannot, the second policy caps it.
+_REASONING_OFF = {"enabled": False, "exclude": True}
+_REASONING_CAPPED = {"max_tokens": 256, "exclude": True}
+
+
+def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> Iterator[tuple[str | None, str | None]]:
+    """One streaming OpenRouter request. Yields (text_piece, finish_reason) — finish_reason is set
+    only once, on a final item with no text piece."""
     headers = {
         "Authorization": f"Bearer {_api_key()}",
         "Content-Type": "application/json",
@@ -185,9 +193,10 @@ def _stream_openrouter(task: str, content: str, hint: str = "") -> Iterator[str]
     body = {
         "model": CONFIG.openrouter_model,
         "models": [CONFIG.openrouter_model, *CONFIG.openrouter_fallbacks],   # OpenRouter tries these in order if one is down/limited
-        "messages": _messages(task, content, hint),
+        "messages": messages,
         "temperature": CONFIG.temperature,
-        "max_tokens": CONFIG.max_output_tokens,
+        "max_tokens": max_tokens,
+        "reasoning": reasoning,   # free models are mostly reasoning models; never show their scratchpad
         "stream": True,
     }
     try:
@@ -195,6 +204,7 @@ def _stream_openrouter(task: str, content: str, hint: str = "") -> Iterator[str]
                            stream=True, timeout=(10, CONFIG.llm_timeout_s)) as r:
             if r.status_code != 200:
                 raise LLMError(_http_error(r))
+            finish = None
             for raw in r.iter_lines():
                 if not raw:
                     continue
@@ -212,14 +222,44 @@ def _stream_openrouter(task: str, content: str, hint: str = "") -> Iterator[str]
                     raise LLMError(f"OpenRouter: {obj['error'].get('message', obj['error'])}")
                 for choice in obj.get("choices", []):
                     piece = (choice.get("delta") or {}).get("content")
+                    finish = choice.get("finish_reason") or finish
                     if piece:
-                        yield piece
+                        yield piece, None
+            yield None, finish
     except LLMError:
         raise
     except requests.exceptions.Timeout as e:
         raise LLMError(f"OpenRouter timed out after {CONFIG.llm_timeout_s:.0f}s") from e
     except requests.exceptions.RequestException as e:
         raise LLMError(f"OpenRouter unreachable: {type(e).__name__}: {e}") from e
+
+
+def _stream_openrouter_messages(messages: list[dict]) -> Iterator[str]:
+    """Stream an OpenRouter chat completion, recovering when a reasoning model burns its whole
+    max_tokens budget on hidden thinking and returns no visible text: retry once with reasoning
+    capped at 256 tokens and double the answer budget; if that also yields nothing, raise an
+    honest LLMError instead of an empty popup."""
+    policy, cap = _REASONING_OFF, CONFIG.max_output_tokens
+    for attempt in range(2):
+        got_text = False
+        finish = None
+        for piece, f in _openrouter_sse(messages, policy, cap):
+            if piece:
+                got_text = True
+                yield piece
+            if f:
+                finish = f
+        if got_text or finish != "length":
+            return
+        if attempt == 0:
+            policy, cap = _REASONING_CAPPED, cap * 2
+            continue
+        raise LLMError("the model used its entire output budget on hidden reasoning and produced no answer — "
+                       "pick a non-reasoning model in OPENROUTER_MODEL (.env) or raise max_output_tokens")
+
+
+def _stream_openrouter(task: str, content: str, hint: str = "") -> Iterator[str]:
+    return _stream_openrouter_messages(_messages(task, content, hint))
 
 
 def _http_error(r: requests.Response) -> str:
@@ -305,44 +345,7 @@ def stream_messages(messages: list[dict]) -> Iterator[str]:
             except Exception as e:
                 raise LLMError(f"{type(e).__name__}: {e}") from e
         return _guard(gen())
-    def gen():
-        headers = {"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json",
-                   "HTTP-Referer": "https://asconciz.local", "X-Title": "As Conciz"}
-        body = {"model": CONFIG.openrouter_model,
-                "models": [CONFIG.openrouter_model, *CONFIG.openrouter_fallbacks],
-                "messages": messages, "temperature": CONFIG.temperature,
-                "max_tokens": CONFIG.max_output_tokens, "stream": True}
-        try:
-            with requests.post(f"{_OPENROUTER_URL}/chat/completions", headers=headers, json=body,
-                               stream=True, timeout=(10, CONFIG.llm_timeout_s)) as r:
-                if r.status_code != 200:
-                    raise LLMError(_http_error(r))
-                for raw in r.iter_lines():
-                    if not raw:
-                        continue
-                    line = raw.decode("utf-8", "ignore")
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    if "error" in obj:
-                        raise LLMError(f"OpenRouter: {obj['error'].get('message', obj['error'])}")
-                    for choice in obj.get("choices", []):
-                        piece = (choice.get("delta") or {}).get("content")
-                        if piece:
-                            yield piece
-        except LLMError:
-            raise
-        except requests.exceptions.Timeout as e:
-            raise LLMError(f"OpenRouter timed out after {CONFIG.llm_timeout_s:.0f}s") from e
-        except requests.exceptions.RequestException as e:
-            raise LLMError(f"OpenRouter unreachable: {type(e).__name__}: {e}") from e
-    return _guard(gen())
+    return _guard(_stream_openrouter_messages(messages))
 
 
 def _guard(src: Iterator[str]) -> Iterator[str]:

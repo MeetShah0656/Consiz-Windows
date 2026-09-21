@@ -14,12 +14,12 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 class Config:
     # --- LLM ---
     provider: str = "openrouter"        # "openrouter" (default, cloud, free model) or "ollama" (local)
-    openrouter_model: str = os.environ.get("OPENROUTER_MODEL", "minimax/minimax-m2.7:free")   # set in .env
-    openrouter_fallbacks: tuple = ("google/gemma-4-26b-a4b-it:free", "google/gemma-4-31b-it:free")   # OpenRouter allows max 3 models total
+    openrouter_model: str = os.environ.get("OPENROUTER_MODEL", "inclusionai/ling-3.0-flash-fin:free")   # set in .env — same model as macOS
+    openrouter_fallbacks: tuple = ("inclusionai/ling-3.0-flash-sante:free", "nvidia/nemotron-3-ultra-550b-a55b:free")   # OpenRouter allows max 3 models total
     ollama_model: str = "gemma4:e4b"    # only used with --provider ollama
     ollama_host: str = "http://localhost:11434"
     llm_timeout_s: float = 45.0         # hard cap per LLM call
-    max_output_tokens: int = 700
+    max_output_tokens: int = 2500       # per request; cost is per token USED, so a high cap is free insurance
     temperature: float = 0.2
     max_input_chars: int = 24_000       # ~6k tokens; longer selections are truncated with a notice
 

@@ -251,17 +251,16 @@ class PopupUI:
         copy_btn.bind("<Button-1>", on_copy)
 
         ask_btn = None
+        # Dictation UI temporarily hidden from the main popup (not yet part of the
+        # shared Mac feature set — see As-Conciz/20-For-Meet-What-Consiz-Does-Today-Plain-Words.md).
+        # Backend (consiz/dictation.py, process_dictation, start_dictation_flow/stop_dictation
+        # below) is untouched — only this button is not created.
         dictate_btn = None
         if not self.light:
             ask_btn = tk.Label(footer, text="Ask", font=("Segoe UI", 9), fg=fg_color, bg=card_bg,
                                padx=10, pady=3, cursor="hand2", highlightthickness=1, highlightbackground=border_color)
             ask_btn.pack(side="right", padx=(4, 0))
             ask_btn.bind("<Button-1>", lambda e: self.toggle_ask())
-
-            dictate_btn = tk.Label(footer, text="🎙 Dictate", font=("Segoe UI", 9), fg=fg_color, bg=card_bg,
-                                   padx=10, pady=3, cursor="hand2", highlightthickness=1, highlightbackground=border_color)
-            dictate_btn.pack(side="right")
-            dictate_btn.bind("<Button-1>", lambda e: self.toggle_dictation())
 
         # Resize grip / drag support
         grip = tk.Label(footer, text="⋰", font=("Segoe UI", 9), fg=sub_color, bg=bg_color, cursor="size_nw_se")
