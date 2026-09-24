@@ -14,3 +14,6 @@ pyobjc-framework-ApplicationServices; sys_platform == 'darwin'
 sounddevice
 faster-whisper
 ollama
+beautifulsoup4
+Pillow
+python-pptx

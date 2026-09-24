@@ -253,18 +253,231 @@ def build_folder_llm_context(md: dict) -> str:
 
 
 # ---------------------------------------------------------------- files
-_KIND = {".pdf": "PDF document", ".docx": "Word document", ".doc": "Word document", ".rtf": "rich text",
-         ".xlsx": "Excel workbook", ".xls": "Excel workbook", ".csv": "CSV table", ".pptx": "PowerPoint",
-         ".md": "Markdown text", ".txt": "plain text", ".py": "Python code", ".js": "JavaScript code",
-         ".json": "JSON data", ".png": "image", ".jpg": "image", ".jpeg": "image", ".heic": "image",
-         ".mp4": "video", ".mov": "video", ".mp3": "audio", ".zip": "ZIP archive", ".dmg": "disk image", ".app": "application"}
+_KIND = {
+    ".pdf": "PDF document", ".docx": "Word document", ".doc": "Word document", ".rtf": "rich text",
+    ".xlsx": "Excel workbook", ".xls": "Excel workbook", ".csv": "CSV table", ".pptx": "PowerPoint",
+    ".md": "Markdown text", ".txt": "plain text", ".py": "Python code", ".js": "JavaScript code",
+    ".json": "JSON data", ".png": "image", ".jpg": "image", ".jpeg": "image", ".heic": "image",
+    ".mp4": "video", ".mov": "video", ".mp3": "audio", ".zip": "ZIP archive", ".tar": "TAR archive",
+    ".tgz": "TAR archive", ".dmg": "disk image", ".app": "application", ".html": "HTML document",
+    ".htm": "HTML document", ".ipynb": "Jupyter Notebook", ".sqlite": "SQLite database",
+    ".db": "SQLite database", ".sqlite3": "SQLite database", ".eml": "Email message"
+}
+
+
+def _x_archive(path: str, limit: int = 2000) -> str | None:
+    """Inspects archive contents without extraction to disk. Previews README if present."""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".zip":
+            import zipfile
+            with zipfile.ZipFile(path, "r") as zf:
+                infos = [info for info in zf.infolist() if not info.is_dir()]
+                total = len(infos)
+                lines = [f"Archive content: {total} files"]
+                for info in infos[:8]:
+                    lines.append(f"  • {info.filename} ({human_size(info.file_size)})")
+                if total > 8:
+                    lines.append(f"  … +{total - 8} more files")
+
+                readme = next((i.filename for i in infos if os.path.basename(i.filename).lower().startswith("readme")), None)
+                if readme:
+                    try:
+                        prev = zf.read(readme).decode("utf-8", errors="replace")[:limit]
+                        lines.append(f"\nReadme preview:\n{prev}")
+                    except Exception:
+                        pass
+                return "\n".join(lines)
+        elif ext in (".tar", ".tgz", ".gz"):
+            import tarfile
+            with tarfile.open(path, "r:*") as tf:
+                members = [m for m in tf.getmembers() if m.isfile()]
+                total = len(members)
+                lines = [f"Archive content: {total} files"]
+                for m in members[:8]:
+                    lines.append(f"  • {m.name} ({human_size(m.size)})")
+                if total > 8:
+                    lines.append(f"  … +{total - 8} more files")
+
+                readme = next((m.name for m in members if os.path.basename(m.name).lower().startswith("readme")), None)
+                if readme:
+                    try:
+                        f = tf.extractfile(readme)
+                        if f:
+                            prev = f.read(limit).decode("utf-8", errors="replace")
+                            lines.append(f"\nReadme preview:\n{prev}")
+                    except Exception:
+                        pass
+                return "\n".join(lines)
+    except Exception:
+        return None
+    return None
+
+
+def _x_html(path: str, limit: int = 2000) -> str | None:
+    """Extracts clean readable text from HTML, stripping scripts and styling."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            raw_html = fh.read()
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(raw_html, "html.parser")
+            for tag in soup(["script", "style", "noscript", "svg", "header", "footer", "nav"]):
+                tag.decompose()
+            title = soup.title.string.strip() if (soup.title and soup.title.string) else ""
+            body = soup.get_text(separator=" ", strip=True)
+            out = []
+            if title:
+                out.append(f"{title}\n")
+            if body:
+                out.append(body)
+            return "\n".join(out)
+        except Exception:
+            text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", raw_html)
+            text = re.sub(r"<[^>]+>", " ", text)
+            return re.sub(r"\s+", " ", text).strip()
+    except Exception:
+        return None
+
+
+def _x_notebook(path: str, limit: int = 2000) -> str | None:
+    """Extracts markdown summaries and code snippets from Jupyter notebooks."""
+    import json
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            nb = json.load(fh)
+        cells = nb.get("cells", [])
+        lines = [f"Jupyter Notebook ({len(cells)} cells):"]
+        for c in cells:
+            src = "".join(c.get("source", [])).strip()
+            if not src:
+                continue
+            ctype = c.get("cell_type", "code")
+            lines.append(f"[{ctype}]\n{src}")
+            if sum(len(l) for l in lines) >= limit:
+                break
+        return "\n\n".join(lines)
+    except Exception:
+        return None
+
+
+def _x_sqlite(path: str, limit: int = 2000) -> str | None:
+    """Reads SQLite schema and row counts safely in read-only mode."""
+    import sqlite3
+    try:
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except Exception:
+            conn = sqlite3.connect(path)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+        tables = [r[0] for r in cur.fetchall()]
+        if not tables:
+            return "SQLite database: 0 tables found"
+        lines = [f"SQLite database: {len(tables)} table(s) found"]
+        for t in tables[:8]:
+            try:
+                cur.execute(f'SELECT COUNT(*) FROM "{t}";')
+                cnt = cur.fetchone()[0]
+            except Exception:
+                cnt = "unknown"
+            try:
+                cur.execute(f'PRAGMA table_info("{t}");')
+                cols = [c[1] for c in cur.fetchall()]
+                cols_str = f" [{', '.join(cols[:6])}]" if cols else ""
+            except Exception:
+                cols_str = ""
+            lines.append(f"  • Table '{t}' ({cnt} rows){cols_str}")
+        conn.close()
+        return "\n".join(lines)
+    except Exception:
+        return None
+
+
+def _x_pptx(path: str, limit: int = 2000) -> str | None:
+    """Extracts slide text from PowerPoint presentations."""
+    try:
+        from pptx import Presentation
+        prs = Presentation(path)
+        slides_text = []
+        for i, slide in enumerate(prs.slides[:10], start=1):
+            slide_paras = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for paragraph in shape.text_frame.paragraphs:
+                        if paragraph.text.strip():
+                            slide_paras.append(paragraph.text.strip())
+            if slide_paras:
+                slides_text.append(f"Slide {i}:\n" + "\n".join(slide_paras))
+            if sum(len(s) for s in slides_text) >= limit:
+                break
+        return f"Presentation ({len(prs.slides)} slides):\n" + "\n\n".join(slides_text)
+    except Exception:
+        return None
+
+
+def _x_email(path: str, limit: int = 2000) -> str | None:
+    """Extracts email headers and plain text content from .eml files."""
+    import email
+    from email import policy
+    try:
+        with open(path, "rb") as fh:
+            msg = email.message_from_binary_file(fh, policy=policy.default)
+        headers = [
+            f"Subject: {msg.get('Subject', '(no subject)')}",
+            f"From: {msg.get('From', '')}",
+            f"Date: {msg.get('Date', '')}",
+        ]
+        body = ""
+        try:
+            body_part = msg.get_body(preferencelist=('plain', 'html'))
+            if body_part:
+                body = body_part.get_content()
+        except Exception:
+            pass
+        return "\n".join([h for h in headers if h.split(': ', 1)[1]]) + (f"\n\n{body[:limit]}" if body else "")
+    except Exception:
+        return None
+
+
+def _x_image(path: str, limit: int = 2000) -> str | None:
+    """Extracts dimensions and EXIF metadata from images."""
+    try:
+        from PIL import Image, ExifTags
+        with Image.open(path) as im:
+            info = [f"Image: {im.format} {im.size[0]}x{im.size[1]}, mode {im.mode}"]
+            exif = getattr(im, "_getexif", lambda: None)()
+            if exif:
+                meta = {}
+                for k, v in exif.items():
+                    if k in ExifTags.TAGS:
+                        tag_name = ExifTags.TAGS[k]
+                        if tag_name in ("DateTime", "Make", "Model", "Software"):
+                            meta[tag_name] = str(v).strip()
+                if meta:
+                    info.append("EXIF: " + ", ".join(f"{k}: {v}" for k, v in meta.items()))
+            return "\n".join(info)
+    except Exception:
+        return None
 
 
 def extract_text(path: str, limit: int) -> str | None:
     """Best-effort text of the first part of a file (a few paragraphs). None if it isn't readable text."""
     ext = os.path.splitext(path)[1].lower()
     try:
-        if ext == ".pdf":
+        if ext in (".zip", ".tar", ".tgz", ".gz"):
+            text = _x_archive(path, limit)
+        elif ext in (".html", ".htm"):
+            text = _x_html(path, limit)
+        elif ext == ".ipynb":
+            text = _x_notebook(path, limit)
+        elif ext in (".db", ".sqlite", ".sqlite3"):
+            text = _x_sqlite(path, limit)
+        elif ext in (".pptx", ".ppt"):
+            text = _x_pptx(path, limit)
+        elif ext in (".eml", ".msg"):
+            text = _x_email(path, limit)
+        elif ext == ".pdf":
             from pypdf import PdfReader
             reader = PdfReader(path)
             out = []
@@ -302,6 +515,8 @@ def extract_text(path: str, limit: int) -> str | None:
         else:
             return None
     except Exception:
+        return None
+    if not text:
         return None
     text = text.strip()
     if not text:

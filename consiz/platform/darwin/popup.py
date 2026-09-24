@@ -501,11 +501,18 @@ class PopupUI:
 
 
 def _friendly_error(detail: str) -> str:
+    from consiz.config import CONFIG
     d = detail.lower()
     if "401" in d or "api key" in d or "insufficient credits" in d or "402" in d:
         return "It's not you, it's the AI. (key problem — check the .env file)"
     if "429" in d or "rate limit" in d:
         return "It's not you, it's the AI. (too many requests — try again in a minute)"
+    if "timeout" in d or "timed out" in d:
+        if getattr(CONFIG, "provider", "") == "ollama":
+            return "It's not you, it's the AI. (local model timed out — model may be slow or too large for available memory)"
+        return "It's not you, it's the AI. (request timed out — server is busy, please retry)"
+    if getattr(CONFIG, "provider", "") == "ollama":
+        return f"It's not you, it's the AI. (local Ollama error: {detail})"
     return "It's not you, it's the AI. (couldn't reach the model — check internet and retry)"
 
 

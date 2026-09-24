@@ -9,6 +9,7 @@ Run:   python3 main.py                 # listen for middle-click / hotkey, print
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
@@ -239,6 +240,27 @@ def main() -> int:
     if not prefs.get("onboarding_completed"):
         from consiz.platform.win32.onboarding import open_onboarding
         open_onboarding()
+
+    if sys.platform == "win32":
+        try:
+            from consiz.platform.win32.tray import SystemTray
+            from consiz.platform.win32.settings import show_settings_dialog
+
+            def _open_settings():
+                if POPUP and getattr(POPUP, "window", None):
+                    POPUP.window.after(0, lambda: show_settings_dialog(POPUP.window))
+                else:
+                    show_settings_dialog()
+
+            tray = SystemTray(
+                on_explain=lambda src: on_trigger(src),
+                on_dictate=lambda src: on_dictate_trigger(src),
+                on_settings=_open_settings,
+                on_exit=lambda: os._exit(0),
+            )
+            tray.start()
+        except Exception as e:
+            output.notify(f"Tray notice: {e}")
 
     try:
         run_app_loop()

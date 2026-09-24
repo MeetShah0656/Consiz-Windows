@@ -118,14 +118,17 @@ def _profile() -> str:
 
 
 def _system(with_profile: bool = False) -> str:
+    from . import languages
+    lang_rule = languages.prompt_rule(getattr(CONFIG, "answer_language", "auto"))
+    base = _SYSTEM + lang_rule
     if not with_profile:
-        return _SYSTEM
+        return base
     prof = _profile()
     if not prof:
-        return _SYSTEM + ("\n\nYou know NOTHING about the user (their profile.md is empty). Never invent personal facts, "
-                          "prices, or quotes on their behalf — if asked to draft a quote or anything needing their details, "
-                          "write the draft with [add your price] placeholders and tell them to fill profile.md.")
-    return _SYSTEM + _PROFILE_RULES.format(profile=prof)
+        return base + ("\n\nYou know NOTHING about the user (their profile.md is empty). Never invent personal facts, "
+                       "prices, or quotes on their behalf — if asked to draft a quote or anything needing their details, "
+                       "write the draft with [add your price] placeholders and tell them to fill profile.md.")
+    return base + _PROFILE_RULES.format(profile=prof)
 
 
 # ---------------------------------------------------------------- helpers
@@ -249,7 +252,14 @@ def _stream_openrouter_messages(messages: list[dict]) -> Iterator[str]:
                 yield piece
             if f:
                 finish = f
-        if got_text or finish != "length":
+        if got_text:
+            try:
+                from . import usage
+                usage.record(_api_key())
+            except Exception:
+                pass
+            return
+        if finish != "length":
             return
         if attempt == 0:
             policy, cap = _REASONING_CAPPED, cap * 2
@@ -288,10 +298,13 @@ def _health_openrouter() -> tuple[bool, str]:
 
 # ---------------------------------------------------------------- Ollama (optional local fallback)
 def _stream_ollama(task: str, content: str, hint: str = "") -> Iterator[str]:
-    import ollama
+    try:
+        import ollama
+    except (ImportError, ModuleNotFoundError) as e:
+        raise LLMError("ollama package not installed. Run: pip install ollama") from e
     kwargs = dict(model=CONFIG.ollama_model, messages=_messages(task, content, hint), stream=True,
                   options={"temperature": CONFIG.temperature})
-    client = ollama.Client(host=CONFIG.ollama_host, timeout=CONFIG.llm_timeout_s)
+    client = ollama.Client(host=CONFIG.ollama_host, timeout=getattr(CONFIG, "ollama_timeout_s", 180.0))
     try:
         try:
             it = client.chat(think=False, **kwargs)
@@ -308,7 +321,10 @@ def _stream_ollama(task: str, content: str, hint: str = "") -> Iterator[str]:
 
 
 def _health_ollama() -> tuple[bool, str]:
-    import ollama
+    try:
+        import ollama
+    except (ImportError, ModuleNotFoundError):
+        return False, "Ollama python package is not installed (run: pip install ollama)"
     try:
         names = [m.get("model") or m.get("name") for m in ollama.Client(host=CONFIG.ollama_host, timeout=5).list().get("models", [])]
     except Exception as e:
@@ -328,8 +344,11 @@ def stream(task: str, content: str, hint: str = "") -> Iterator[str]:
 def stream_messages(messages: list[dict]) -> Iterator[str]:
     """Stream a raw message list (used for follow-up questions)."""
     if CONFIG.provider == "ollama":
-        import ollama
-        client = ollama.Client(host=CONFIG.ollama_host, timeout=CONFIG.llm_timeout_s)
+        try:
+            import ollama
+        except (ImportError, ModuleNotFoundError) as e:
+            raise LLMError("ollama package not installed. Run: pip install ollama") from e
+        client = ollama.Client(host=CONFIG.ollama_host, timeout=getattr(CONFIG, "ollama_timeout_s", 180.0))
         def gen():
             try:
                 try:

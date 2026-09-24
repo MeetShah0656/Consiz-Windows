@@ -101,9 +101,10 @@ class Config:
     provider: str = "openrouter"        # "openrouter" (default, cloud, free model) or "ollama" (local)
     openrouter_model: str = os.environ.get("OPENROUTER_MODEL", "inclusionai/ling-3.0-flash-fin:free")   # set in .env — same model as macOS
     openrouter_fallbacks: tuple = ("inclusionai/ling-3.0-flash-sante:free", "nvidia/nemotron-3-ultra-550b-a55b:free")   # OpenRouter allows max 3 models total
-    ollama_model: str = "gemma4:e4b"    # only used with --provider ollama
-    ollama_host: str = "http://localhost:11434"
-    llm_timeout_s: float = 45.0         # hard cap per LLM call
+    ollama_model: str = os.environ.get("CONSIZ_OLLAMA_MODEL", "gemma4:e4b")    # only used with --provider ollama
+    ollama_host: str = os.environ.get("CONSIZ_OLLAMA_HOST", "http://localhost:11434")
+    ollama_timeout_s: float = float(os.environ.get("CONSIZ_OLLAMA_TIMEOUT", "180.0"))   # local models may need longer warmup
+    llm_timeout_s: float = 45.0         # hard cap per cloud LLM call
     max_output_tokens: int = 2500       # per request; cost is per token USED, so a high cap is free insurance
     temperature: float = 0.2
     max_input_chars: int = 24_000       # ~6k tokens; longer selections are truncated with a notice
@@ -142,9 +143,19 @@ class Config:
     dictate_auto_stop_on_silence: bool = os.environ.get("CONSIZ_DICTATE_AUTO_STOP", "").lower() in ("1", "true", "yes")
     dictate_max_duration_s: float = float(os.environ.get("CONSIZ_DICTATE_MAX_DURATION", "120.0"))
 
+    # --- Answer language ---
+    answer_language: str = "auto"
+    max_continuations: int = 2
+
     # --- Output ---
     stream: bool = True
     color: bool = True
 
 
 CONFIG = Config()
+
+from . import prefs as _prefs
+from .languages import normalize as _norm_lang
+CONFIG.answer_language = _norm_lang(_prefs.get("answer_language") or os.environ.get("ANSWER_LANGUAGE", "auto"))
+CONFIG.provider = os.environ.get("CONSIZ_PROVIDER") or _prefs.get("provider") or "openrouter"
+CONFIG.ollama_model = os.environ.get("CONSIZ_OLLAMA_MODEL") or _prefs.get("ollama_model") or CONFIG.ollama_model

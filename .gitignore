@@ -5,3 +5,8 @@ __pycache__/
 profile.md
 .DS_Store
 As-Conciz.zip
+build/
+dist/
+*.spec
+*.pyc
+*.backup

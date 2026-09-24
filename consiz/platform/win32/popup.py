@@ -19,6 +19,22 @@ from consiz.dictation import AudioRecorder, get_dictation_engine
 from consiz.llm import KIND_TITLES, LLMError
 from consiz.models import CapturedContext, CaptureMethod, Result
 from consiz.output import _pretty_line
+from consiz.platform.win32.theme import (
+    CREAM_50,
+    CREAM_100,
+    CREAM_200,
+    CREAM_300,
+    MAROON_900,
+    MAROON_800,
+    MAROON_700,
+    MAROON_600,
+    INK_MUTED,
+    SUCCESS,
+    WARNING,
+    FOCUS_RING,
+    FONT_DISPLAY,
+    FONT_TEXT,
+)
 
 WIDTH = 420
 PAD = 14
@@ -109,25 +125,11 @@ def _dispatch(fn: Callable, *args) -> None:
     _UI_QUEUE.put((fn, args))
 
 
-def _apply_acrylic(window: tk.Toplevel, is_dark: bool = True) -> None:
-    try:
-        window.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id()) or window.winfo_id()
-        # Enable DWM Acrylic backdrop if Windows 11
-        backdrop_val = ctypes.c_int(3)  # DWMSBT_TRANSIENTWINDOW (Acrylic)
-        dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop_val), 4)
-
-        # Extend margins
-        margins = MARGINS(-1, -1, -1, -1)
-        dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-
-        # Accent policy fallback for Win 10/11
-        gradient = 0x66181a1f if is_dark else 0x66f5f5f7
-        policy = ACCENT_POLICY(4, 2, gradient, 0)
-        data = WINCOMPATTRDATA(19, ctypes.pointer(policy), ctypes.sizeof(policy))
-        user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data))
-    except Exception:
-        pass
+def _apply_acrylic(window: tk.Toplevel, is_dark: bool = False) -> None:
+    # Per consiz-cream-maroon-ui-redesign.md: "Avoid glassmorphism.
+    # Transform the existing dark answer popup into a compact warm-paper panel."
+    # DWM blur extension makes light-colored Tkinter windows transparent and washes out ClearType text.
+    pass
 
 
 def _get_cursor_pos() -> tuple[int, int]:
@@ -168,50 +170,67 @@ class PopupUI:
         win.overrideredirect(True)
         win.attributes("-topmost", True)
 
-        bg_color = "#f4f5f8" if self.light else "#16181d"
-        card_bg = "#ffffff" if self.light else "#20232a"
-        fg_color = "#111111" if self.light else "#f0f2f5"
-        sub_color = "#666666" if self.light else "#9aa0a6"
-        border_color = "#d1d5db" if self.light else "#323640"
+        bg_color = CREAM_200 if self.light else CREAM_100
+        card_bg = CREAM_50
+        fg_color = MAROON_900
+        sub_color = INK_MUTED
+        border_color = CREAM_300
 
         win.configure(bg=border_color)
-        win.attributes("-alpha", 0.94)
 
         container = tk.Frame(win, bg=bg_color, padx=PAD, pady=PAD)
         container.pack(fill="both", expand=True, padx=1, pady=1)
 
+        # Thin maroon top accent bar
+        accent_bar = tk.Frame(container, bg=MAROON_700, height=2)
+        accent_bar.pack(fill="x", side="top", pady=(0, 6))
+
         # Header: Title + Meta + Close button
         header = tk.Frame(container, bg=bg_color)
-        header.pack(fill="x", side="top", pady=(0, 6))
+        header.pack(fill="x", side="top", pady=(0, 4))
 
-        title_lbl = tk.Label(header, text="Consiz", font=("Segoe UI Variable Display", 11, "bold"),
-                             fg=fg_color, bg=bg_color, anchor="w")
+        title_lbl = tk.Label(
+            header,
+            text="Consiz",
+            font=(FONT_DISPLAY, 11, "bold"),
+            fg=MAROON_900,
+            bg=bg_color,
+            anchor="w",
+        )
         title_lbl.pack(side="left", fill="x", expand=True)
 
-        close_btn = tk.Label(header, text="✕", font=("Segoe UI", 10), fg=sub_color, bg=bg_color, cursor="hand2")
+        close_btn = tk.Label(header, text="✕", font=(FONT_TEXT, 10), fg=sub_color, bg=bg_color, cursor="hand2")
         close_btn.pack(side="right", padx=(6, 0))
         close_btn.bind("<Button-1>", lambda e: self.hide())
+        close_btn.bind("<Enter>", lambda e: close_btn.configure(fg=MAROON_700))
+        close_btn.bind("<Leave>", lambda e: close_btn.configure(fg=INK_MUTED))
 
         # Meta label
-        meta_lbl = tk.Label(container, text="", font=("Segoe UI", 8), fg=sub_color, bg=bg_color, anchor="w")
+        meta_lbl = tk.Label(container, text="", font=(FONT_TEXT, 8), fg=sub_color, bg=bg_color, anchor="w")
         meta_lbl.pack(fill="x", side="top", pady=(0, 6))
 
         # Body text area
-        text_frame = tk.Frame(container, bg=card_bg, highlightthickness=0)
+        text_frame = tk.Frame(container, bg=card_bg, bd=1, relief="solid", highlightbackground=CREAM_300, highlightthickness=1)
         text_frame.pack(fill="both", expand=True)
 
         text_widget = tk.Text(
             text_frame,
-            font=("Segoe UI", 10),
+            font=(FONT_TEXT, 10),
             fg=fg_color,
             bg=card_bg,
+            selectbackground=CREAM_200,
+            selectforeground=MAROON_900,
             wrap="word",
             relief="flat",
-            padx=8,
-            pady=8,
+            padx=10,
+            pady=10,
             height=6,
-            highlightthickness=0
+            highlightthickness=0,
         )
+        text_widget.tag_configure("normal", foreground=MAROON_900)
+        text_widget.tag_configure("dim", foreground=INK_MUTED)
+        text_widget.tag_configure("warn", foreground=WARNING)
+
         scrollbar = tk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
         scrollbar.pack(side="right", fill="y")
         text_widget.config(yscrollcommand=scrollbar.set)
@@ -221,8 +240,17 @@ class PopupUI:
 
         # Ask entry row (hidden initially)
         ask_frame = tk.Frame(container, bg=bg_color)
-        ask_entry = tk.Entry(ask_frame, font=("Segoe UI", 9), fg=fg_color, bg=card_bg,
-                             relief="flat", highlightbackground=border_color, highlightthickness=1)
+        ask_entry = tk.Entry(
+            ask_frame,
+            font=(FONT_TEXT, 9),
+            fg=fg_color,
+            bg=card_bg,
+            insertbackground=MAROON_900,
+            relief="flat",
+            highlightbackground=border_color,
+            highlightcolor=FOCUS_RING,
+            highlightthickness=1,
+        )
         ask_entry.pack(fill="x", expand=True, ipady=4, pady=(6, 0))
 
         def on_ask_submit(e):
@@ -238,17 +266,31 @@ class PopupUI:
         footer = tk.Frame(container, bg=bg_color)
         footer.pack(fill="x", side="bottom", pady=(8, 0))
 
-        copy_btn = tk.Label(footer, text="Copy", font=("Segoe UI", 9), fg=fg_color, bg=card_bg,
-                            padx=10, pady=3, cursor="hand2", highlightthickness=1, highlightbackground=border_color)
+        copy_btn = tk.Label(
+            footer,
+            text="Copy",
+            font=(FONT_TEXT, 9, "bold"),
+            fg=MAROON_800,
+            bg=card_bg,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=border_color,
+        )
         copy_btn.pack(side="right", padx=(4, 0))
 
         def on_copy(e):
             root.clipboard_clear()
             root.clipboard_append(self.full_text())
-            copy_btn.config(text="Copied")
-            root.after(1500, lambda: copy_btn.config(text="Copy"))
+            copy_btn.config(text="Copied", bg=CREAM_200)
+            root.after(1500, lambda: copy_btn.config(text="Copy", bg=card_bg))
 
         copy_btn.bind("<Button-1>", on_copy)
+        copy_btn.bind("<Enter>", lambda e: copy_btn.config(bg=CREAM_200))
+        copy_btn.bind("<Leave>", lambda e: copy_btn.config(bg=card_bg))
 
         ask_btn = None
         # Dictation UI temporarily hidden from the main popup (not yet part of the
@@ -257,13 +299,25 @@ class PopupUI:
         # below) is untouched — only this button is not created.
         dictate_btn = None
         if not self.light:
-            ask_btn = tk.Label(footer, text="Ask", font=("Segoe UI", 9), fg=fg_color, bg=card_bg,
-                               padx=10, pady=3, cursor="hand2", highlightthickness=1, highlightbackground=border_color)
+            ask_btn = tk.Label(
+                footer,
+                text="Ask",
+                font=(FONT_TEXT, 9, "bold"),
+                fg=CREAM_50,
+                bg=MAROON_700,
+                padx=14,
+                pady=4,
+                cursor="hand2",
+                bd=0,
+                relief="flat",
+            )
             ask_btn.pack(side="right", padx=(4, 0))
             ask_btn.bind("<Button-1>", lambda e: self.toggle_ask())
+            ask_btn.bind("<Enter>", lambda e: ask_btn.config(bg=MAROON_600))
+            ask_btn.bind("<Leave>", lambda e: ask_btn.config(bg=MAROON_700))
 
         # Resize grip / drag support
-        grip = tk.Label(footer, text="⋰", font=("Segoe UI", 9), fg=sub_color, bg=bg_color, cursor="size_nw_se")
+        grip = tk.Label(footer, text="⋰", font=(FONT_TEXT, 9), fg=sub_color, bg=bg_color, cursor="size_nw_se")
         grip.pack(side="left")
 
         def start_resize(e):
@@ -314,7 +368,7 @@ class PopupUI:
         except Exception:
             pass
 
-        _apply_acrylic(win, is_dark=not self.light)
+        pass
 
     def _compute_height(self) -> int:
         if self.user_size:
@@ -366,7 +420,8 @@ class PopupUI:
         self._lines.append(line)
         self.text_widget.config(state="normal")
         prefix = "\n" if self.text_widget.get("1.0", "end-1c") else ""
-        self.text_widget.insert("end", prefix + line)
+        tag = "warn" if line.startswith("⚠") else ("dim" if dim else "normal")
+        self.text_widget.insert("end", prefix + line, tag)
         self.text_widget.see("end")
         self.text_widget.config(state="disabled")
 
@@ -468,7 +523,7 @@ class PopupUI:
         if not self._is_dictating:
             return
         self._is_dictating = False
-        fg_col = "#111111" if self.light else "#f0f2f5"
+        fg_col = MAROON_800
         if self.dictate_btn:
             _dispatch(self.dictate_btn.config, {"text": "🎙 Dictate", "fg": fg_col})
 
@@ -613,11 +668,18 @@ class PopupUI:
 
 
 def _friendly_error(detail: str) -> str:
+    from consiz.config import CONFIG
     d = detail.lower()
     if "401" in d or "api key" in d or "insufficient credits" in d or "402" in d:
         return "It's not you, it's the AI. (key problem — check the .env file)"
     if "429" in d or "rate limit" in d:
         return "It's not you, it's the AI. (too many requests — try again in a minute)"
+    if "timeout" in d or "timed out" in d:
+        if getattr(CONFIG, "provider", "") == "ollama":
+            return "It's not you, it's the AI. (local model timed out — 8B+ models can be slow on 4GB GPUs; try a smaller model like llama3.2)"
+        return "It's not you, it's the AI. (request timed out — server is busy, please retry)"
+    if getattr(CONFIG, "provider", "") == "ollama":
+        return f"It's not you, it's the AI. (local Ollama error: {detail})"
     return "It's not you, it's the AI. (couldn't reach the model — check internet and retry)"
 
 
