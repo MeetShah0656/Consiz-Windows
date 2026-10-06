@@ -17,3 +17,5 @@ ollama
 beautifulsoup4
 Pillow
 python-pptx
+keyring; sys_platform == 'win32'
+pystray; sys_platform == 'win32'

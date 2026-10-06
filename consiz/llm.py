@@ -170,7 +170,23 @@ def dictate_messages(content: str, instruction: str, language_name: str = "Engli
     ]
 
 
+def _server_url() -> str:
+    """Backend URL (server/app.py). When set, the app never talks to OpenRouter directly: it sends the
+    user's Google ID token to the backend, which holds the real key and enforces limits."""
+    return os.environ.get("CONSIZ_SERVER_URL", "").strip().rstrip("/")
+
+
+def _base_url() -> str:
+    return f"{_server_url()}/v1" if _server_url() else _OPENROUTER_URL
+
+
 def _api_key() -> str:
+    if _server_url():
+        from . import auth
+        try:
+            return auth.id_token()
+        except auth.AuthError as e:
+            raise LLMError(str(e))
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
         raise LLMError("OPENROUTER_API_KEY is not set. Put it in the .env file next to main.py (see .env.example).")
@@ -203,7 +219,7 @@ def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> I
         "stream": True,
     }
     try:
-        with requests.post(f"{_OPENROUTER_URL}/chat/completions", headers=headers, json=body,
+        with requests.post(f"{_base_url()}/chat/completions", headers=headers, json=body,
                            stream=True, timeout=(10, CONFIG.llm_timeout_s)) as r:
             if r.status_code != 200:
                 raise LLMError(_http_error(r))
@@ -255,7 +271,8 @@ def _stream_openrouter_messages(messages: list[dict]) -> Iterator[str]:
         if got_text:
             try:
                 from . import usage
-                usage.record(_api_key())
+                if not _server_url():
+                    usage.record(_api_key())
             except Exception:
                 pass
             return
@@ -273,6 +290,11 @@ def _stream_openrouter(task: str, content: str, hint: str = "") -> Iterator[str]
 
 
 def _http_error(r: requests.Response) -> str:
+    if _server_url():
+        try:
+            return str(r.json().get("detail", f"server error {r.status_code}"))
+        except Exception:
+            return f"server error {r.status_code}"
     try:
         msg = r.json().get("error", {}).get("message", r.text[:200])
     except Exception:
@@ -283,6 +305,12 @@ def _http_error(r: requests.Response) -> str:
 
 
 def _health_openrouter() -> tuple[bool, str]:
+    if _server_url():
+        try:
+            ok = requests.get(f"{_server_url()}/health", timeout=10).status_code == 200
+        except requests.exceptions.RequestException as e:
+            return False, f"Conciz server unreachable ({type(e).__name__})"
+        return (True, "Conciz server") if ok else (False, "Conciz server is not healthy")
     try:
         key = _api_key()
     except LLMError as e:

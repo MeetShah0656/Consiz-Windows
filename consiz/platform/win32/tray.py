@@ -104,7 +104,9 @@ class SystemTray:
         on_dictate: Optional[Callable[[str], None]] = None,
         on_settings: Optional[Callable[[], None]] = None,
         on_exit: Optional[Callable[[], None]] = None,
+        on_sign_out: Optional[Callable[[], None]] = None,
     ) -> None:
+        self.on_sign_out = on_sign_out
         self.on_explain = on_explain
         self.on_dictate = on_dictate
         self.on_settings = on_settings
@@ -132,6 +134,10 @@ class SystemTray:
                 show_settings_dialog()
             except Exception:
                 pass
+
+    def _sign_out(self, icon, item):
+        if self.on_sign_out:
+            self.on_sign_out()
 
     def _quit_app(self, icon, item):
         if self.icon:
@@ -185,6 +191,7 @@ class SystemTray:
             Item("⚙️ Configure API Key & Settings...", self._open_settings),
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
             Menu.SEPARATOR,
+            *([Item("Sign out", self._sign_out)] if self.on_sign_out else []),
             Item("Exit Consiz", self._quit_app),
         )
 

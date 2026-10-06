@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: conciz-server
+    runtime: python
+    plan: free
+    buildCommand: pip install -r server/requirements.txt
+    startCommand: uvicorn server.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: OPENROUTER_API_KEY
+        sync: false          # set in the Render dashboard, never in git
+      - key: GOOGLE_CLIENT_ID
+        sync: false          # same Desktop client ID the app uses
+      - key: DAILY_LIMIT
+        value: "50"
+      - key: ALLOWED_EMAILS
+        sync: false          # optional: comma-separated emails; empty = any verified Google account

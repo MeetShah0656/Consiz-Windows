@@ -96,7 +96,21 @@ def run_terminal_dictation(ctx: CapturedContext) -> None:
 POPUP = None
 
 
+def _login_needed() -> bool:
+    """True (and opens the sign-in window) when auth is configured but nobody is signed in."""
+    from consiz import auth
+    if POPUP is None or not auth.enabled() or auth.signed_in():
+        return False
+    from consiz.platform.win32.popup import _dispatch
+    from consiz.platform.win32.login import open_login
+    output.notify("sign in required — opening the sign-in window")
+    _dispatch(open_login)
+    return True
+
+
 def on_trigger(source: str) -> None:
+    if _login_needed():
+        return
     from consiz.capture import capture
     output.notify(f"trigger: {source}")
     ctx = capture()
@@ -237,12 +251,35 @@ def main() -> int:
     POPUP.on_dictate = dictate_handler
 
     from consiz import prefs
+
+    def _ensure_login() -> None:
+        from consiz import auth
+        if not auth.enabled():
+            return
+        from consiz.platform.win32.popup import _dispatch
+
+        def _check():                     # network check off the UI thread; then show login if needed
+            auth.revalidate()
+            _dispatch(_login_needed)
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _sign_out() -> None:
+        from consiz import auth
+        from consiz.platform.win32.popup import _dispatch
+        auth.sign_out()
+        output.notify("signed out")
+        _dispatch(_login_needed)
+
     if not prefs.get("onboarding_completed"):
         from consiz.platform.win32.onboarding import open_onboarding
-        open_onboarding()
+        open_onboarding(on_finish=_ensure_login)
+    else:
+        _ensure_login()
 
     if sys.platform == "win32":
         try:
+            from consiz import auth as _auth
+            auth_on = _auth.enabled()
             from consiz.platform.win32.tray import SystemTray
             from consiz.platform.win32.settings import show_settings_dialog
 
@@ -257,6 +294,7 @@ def main() -> int:
                 on_dictate=lambda src: on_dictate_trigger(src),
                 on_settings=_open_settings,
                 on_exit=lambda: os._exit(0),
+                on_sign_out=_sign_out if auth_on else None,
             )
             tray.start()
         except Exception as e:
