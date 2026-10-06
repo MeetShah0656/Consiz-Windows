@@ -16,7 +16,7 @@ from typing import Callable
 
 from consiz.config import CONFIG
 from consiz.dictation import AudioRecorder, get_dictation_engine
-from consiz.llm import KIND_TITLES, LLMError
+from consiz.llm import KIND_TITLES, LLMError, SignInRequired
 from consiz.models import CapturedContext, CaptureMethod, Result
 from consiz.output import _pretty_line
 from consiz.platform.win32.theme import (
@@ -145,6 +145,7 @@ class PopupUI:
         self.light = light
         self.on_ask: Callable[[str], None] | None = None
         self.on_dictate: Callable[[CapturedContext, str], None] | None = None
+        self.on_auth_needed: Callable[[], None] | None = None
         self.context = ""
         self.last_answer = ""
         self.history: list[dict] = []          # follow-up turns: [{"role","content"}, ...]
@@ -742,8 +743,12 @@ class PopupUI:
                     emit(_pretty_line(buf))
             except LLMError as e:
                 failed = True
-                emit(_friendly_error(str(e)))
-                emit(f"({e})")
+                if isinstance(e, SignInRequired):
+                    emit("Please sign in again to continue.")
+                    self._need_login()
+                else:
+                    emit(_friendly_error(str(e)))
+                    emit(f"({e})")
 
         text = "".join(collected)
         if text.upper().startswith("KIND"):
@@ -759,6 +764,11 @@ class PopupUI:
 
         self.last_answer = text or res.body
         _dispatch(self._set_meta, f"{res.content_type} · {res.source_app} · {time.perf_counter() - t0:.1f}s")
+
+    def _need_login(self) -> None:
+        """Sign-in expired or was rejected mid-session: reopen the login window (set by main.py)."""
+        if self.on_auth_needed is not None:
+            _dispatch(self.on_auth_needed)
 
     def show_followup(self, question: str, stream) -> None:
         """Stream the answer to a follow-up into the SAME chat window (worker thread)."""
@@ -785,8 +795,12 @@ class PopupUI:
             if buf.strip() and not (first_line and buf.strip().strip("*`#_ ").upper().startswith("KIND")):
                 emit(buf)
         except LLMError as e:
-            _dispatch(self._append, "⚠ " + _friendly_error(str(e)))
-            _dispatch(self._append, f"({e})", True)
+            if isinstance(e, SignInRequired):
+                _dispatch(self._append, "⚠ Please sign in again to continue.")
+                self._need_login()
+            else:
+                _dispatch(self._append, "⚠ " + _friendly_error(str(e)))
+                _dispatch(self._append, f"({e})", True)
             return
         text = "".join(collected)
         if text.upper().lstrip("*`#_ ").startswith("KIND"):

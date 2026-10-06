@@ -105,8 +105,10 @@ class SystemTray:
         on_settings: Optional[Callable[[], None]] = None,
         on_exit: Optional[Callable[[], None]] = None,
         on_sign_out: Optional[Callable[[], None]] = None,
+        get_user_label: Optional[Callable[[], str]] = None,
     ) -> None:
         self.on_sign_out = on_sign_out
+        self.get_user_label = get_user_label
         self.on_explain = on_explain
         self.on_dictate = on_dictate
         self.on_settings = on_settings
@@ -191,6 +193,7 @@ class SystemTray:
             Item("⚙️ Configure API Key & Settings...", self._open_settings),
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
             Menu.SEPARATOR,
+            *([Item(lambda item: self.get_user_label(), None, enabled=False)] if self.get_user_label else []),
             *([Item("Sign out", self._sign_out)] if self.on_sign_out else []),
             Item("Exit Consiz", self._quit_app),
         )

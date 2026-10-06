@@ -13,7 +13,13 @@ services:
         sync: false          # set in the Render dashboard, never in git
       - key: GOOGLE_CLIENT_ID
         sync: false          # same Desktop client ID the app uses
+      - key: DATABASE_URL
+        sync: false          # free Postgres (e.g. neon.tech) so daily counts survive restarts
       - key: DAILY_LIMIT
         value: "50"
+      - key: IP_DAILY_LIMIT
+        value: "300"
+      - key: RATE_PER_MIN
+        value: "12"
       - key: ALLOWED_EMAILS
         sync: false          # optional: comma-separated emails; empty = any verified Google account

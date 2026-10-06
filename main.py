@@ -254,6 +254,11 @@ def main() -> int:
         res = process_dictation(ctx, instruction)
         POPUP.show_result(res)
 
+    def _reopen_login() -> None:
+        from consiz.platform.win32.login import open_login
+        open_login()
+
+    POPUP.on_auth_needed = _reopen_login
     POPUP.on_ask = ask_handler
     POPUP.on_dictate = dictate_handler
 
@@ -302,6 +307,7 @@ def main() -> int:
                 on_settings=_open_settings,
                 on_exit=lambda: os._exit(0),
                 on_sign_out=_sign_out if auth_on else None,
+                get_user_label=(lambda: "Signed in: " + _auth.display_name()) if auth_on else None,
             )
             tray.start()
         except Exception as e:

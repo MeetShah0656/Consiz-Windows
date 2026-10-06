@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Iterator
 
 import requests
@@ -16,6 +17,10 @@ from .config import CONFIG
 
 class LLMError(Exception):
     """Backend unreachable / timed out / bad key / model missing. Router maps this to an ErrorState."""
+
+
+class SignInRequired(LLMError):
+    """The Google sign-in is missing, expired or rejected — the UI should reopen the login window."""
 
 
 _SYSTEM = (
@@ -203,6 +208,8 @@ def _api_key() -> str:
         try:
             return auth.id_token()
         except auth.AuthError as e:
+            if e.rejected or "sign in" in str(e).lower() or "expired" in str(e).lower():
+                raise SignInRequired(str(e))
             raise LLMError(str(e))
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
@@ -235,37 +242,57 @@ def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> I
         "reasoning": reasoning,   # free models are mostly reasoning models; never show their scratchpad
         "stream": True,
     }
+    # A sleeping free-tier server takes 30-60 s to wake: wait longer, and retry (before any text arrived)
+    # on the 502/503/504 or connection errors the host returns while it boots.
+    on_server = bool(_server_url())
+    read_timeout = max(CONFIG.llm_timeout_s, 100.0) if on_server else CONFIG.llm_timeout_s
+    attempts = 3 if on_server else 1
     try:
-        with requests.post(f"{_base_url()}/chat/completions", headers=headers, json=body,
-                           stream=True, timeout=(10, CONFIG.llm_timeout_s)) as r:
-            if r.status_code != 200:
-                raise LLMError(_http_error(r))
-            finish = None
-            for raw in r.iter_lines():
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", "ignore")
-                if not line.startswith("data:"):
-                    continue          # SSE comments / keep-alives
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if "error" in obj:
-                    raise LLMError(f"OpenRouter: {obj['error'].get('message', obj['error'])}")
-                for choice in obj.get("choices", []):
-                    piece = (choice.get("delta") or {}).get("content")
-                    finish = choice.get("finish_reason") or finish
-                    if piece:
-                        yield piece, None
-            yield None, finish
+        for attempt in range(attempts):
+            last = attempt + 1 == attempts
+            try:
+                with requests.post(f"{_base_url()}/chat/completions", headers=headers, json=body,
+                                   stream=True, timeout=(15 if on_server else 10, read_timeout)) as r:
+                    if r.status_code in (502, 503, 504) and not last:
+                        time.sleep(6)
+                        continue
+                    if r.status_code == 401 and on_server:
+                        from . import auth
+                        auth.sign_out()               # the server rejected our token: it is no longer valid
+                        raise SignInRequired("Your sign-in expired. Please sign in again.")
+                    if r.status_code != 200:
+                        raise LLMError(_http_error(r))
+                    finish = None
+                    for raw in r.iter_lines():
+                        if not raw:
+                            continue
+                        line = raw.decode("utf-8", "ignore")
+                        if not line.startswith("data:"):
+                            continue          # SSE comments / keep-alives
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if "error" in obj:
+                            raise LLMError(f"OpenRouter: {obj['error'].get('message', obj['error'])}")
+                        for choice in obj.get("choices", []):
+                            piece = (choice.get("delta") or {}).get("content")
+                            finish = choice.get("finish_reason") or finish
+                            if piece:
+                                yield piece, None
+                    yield None, finish
+                    return
+            except (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout):
+                if last:
+                    raise
+                time.sleep(6)
     except LLMError:
         raise
     except requests.exceptions.Timeout as e:
-        raise LLMError(f"OpenRouter timed out after {CONFIG.llm_timeout_s:.0f}s") from e
+        raise LLMError(f"OpenRouter timed out after {read_timeout:.0f}s") from e
     except requests.exceptions.RequestException as e:
         raise LLMError(f"OpenRouter unreachable: {type(e).__name__}: {e}") from e
 
