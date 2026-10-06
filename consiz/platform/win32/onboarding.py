@@ -507,7 +507,7 @@ class OnboardingUI:
             self.cloud_frame.pack(fill="x")
             import os
 
-            has_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+            has_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip() or os.environ.get("CONSIZ_SERVER_URL", "").strip())
             self.ai_status.configure(
                 text="✓ Key saved — Cloud is ready."
                 if has_key

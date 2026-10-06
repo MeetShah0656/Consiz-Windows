@@ -173,8 +173,15 @@ def main() -> int:
         admin_status = "Admin ✓ (Top Priority)" if is_admin() else "Standard User"
         output.notify(f"Windows Integrity: {admin_status}")
 
-    ok, msg = llm.health()
-    output.notify(("✓ " if ok else "✗ ") + msg)
+    def _report_health() -> None:
+        ok, msg = llm.health()
+        output.notify(("✓ " if ok else "✗ ") + msg)
+
+    one_shot = bool(args.text is not None or args.path or args.capture or args.dictate)
+    if one_shot:
+        _report_health()
+    else:   # the listener must not wait on the network (a sleeping server can take 30-50 s to answer)
+        threading.Thread(target=_report_health, daemon=True, name="health-check").start()
 
     # Pre-warm faster-whisper model in background
     get_dictation_engine().warmup()
@@ -238,7 +245,7 @@ def main() -> int:
     def ask_handler(question: str) -> None:
         from consiz import llm
         output.notify(f"follow-up: {question}")
-        msgs = llm.followup_messages(POPUP.context, POPUP.last_answer, question)
+        msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question)
         POPUP.show_followup(question, llm.stream_messages(msgs))
 
     def dictate_handler(ctx: CapturedContext, instruction) -> None:

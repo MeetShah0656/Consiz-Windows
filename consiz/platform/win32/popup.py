@@ -145,10 +145,16 @@ class PopupUI:
         self.light = light
         self.on_ask: Callable[[str], None] | None = None
         self.on_dictate: Callable[[CapturedContext, str], None] | None = None
-        self.answer_ui: PopupUI | None = None
-        self.ask_visible = False
         self.context = ""
         self.last_answer = ""
+        self.history: list[dict] = []          # follow-up turns: [{"role","content"}, ...]
+        self._msg_texts: list[str] = []        # plain text per assistant message (for per-message Copy)
+        self._transcript: list[list[str]] = []  # [who, text] in order (for Copy all)
+        self._ai_open = False
+        self._ai_text: list[str] = []
+        self._thinking = False
+        self._chat_busy = False
+        self._placeholder_on = True
         self.window: tk.Toplevel | None = None
         self._lines: list[str] = []
         self.user_size: tuple[int, int] | None = None
@@ -164,159 +170,135 @@ class PopupUI:
         self._captured_ctx: CapturedContext | None = None
         self.dictate_btn: tk.Label | None = None
 
+    # ------------------------------------------------------------------ chat UI
     def _build(self) -> None:
         root = _get_root()
         win = tk.Toplevel(root)
         win.overrideredirect(True)
         win.attributes("-topmost", True)
 
-        bg_color = CREAM_200 if self.light else CREAM_100
+        bg_color = CREAM_100
         card_bg = CREAM_50
-        fg_color = MAROON_900
         sub_color = INK_MUTED
         border_color = CREAM_300
-
         win.configure(bg=border_color)
 
-        container = tk.Frame(win, bg=bg_color, padx=PAD, pady=PAD)
+        container = tk.Frame(win, bg=bg_color, padx=PAD, pady=PAD - 4)
         container.pack(fill="both", expand=True, padx=1, pady=1)
 
-        # Thin maroon top accent bar
         accent_bar = tk.Frame(container, bg=MAROON_700, height=2)
         accent_bar.pack(fill="x", side="top", pady=(0, 6))
 
-        # Header: Title + Meta + Close button
+        # ---- header: title, New chat, close
         header = tk.Frame(container, bg=bg_color)
-        header.pack(fill="x", side="top", pady=(0, 4))
-
-        title_lbl = tk.Label(
-            header,
-            text="Consiz",
-            font=(FONT_DISPLAY, 11, "bold"),
-            fg=MAROON_900,
-            bg=bg_color,
-            anchor="w",
-        )
+        header.pack(fill="x", side="top")
+        title_lbl = tk.Label(header, text="Consiz", font=(FONT_DISPLAY, 11, "bold"), fg=MAROON_900,
+                             bg=bg_color, anchor="w")
         title_lbl.pack(side="left", fill="x", expand=True)
 
         close_btn = tk.Label(header, text="✕", font=(FONT_TEXT, 10), fg=sub_color, bg=bg_color, cursor="hand2")
-        close_btn.pack(side="right", padx=(6, 0))
+        close_btn.pack(side="right", padx=(8, 0))
         close_btn.bind("<Button-1>", lambda e: self.hide())
         close_btn.bind("<Enter>", lambda e: close_btn.configure(fg=MAROON_700))
         close_btn.bind("<Leave>", lambda e: close_btn.configure(fg=INK_MUTED))
 
-        # Meta label
+        new_btn = tk.Label(header, text="↺ New chat", font=(FONT_TEXT, 8, "bold"), fg=MAROON_700, bg=bg_color,
+                           cursor="hand2")
+        new_btn.pack(side="right")
+        new_btn.bind("<Button-1>", lambda e: self.new_chat())
+        new_btn.bind("<Enter>", lambda e: new_btn.configure(fg=MAROON_600))
+        new_btn.bind("<Leave>", lambda e: new_btn.configure(fg=MAROON_700))
+
         meta_lbl = tk.Label(container, text="", font=(FONT_TEXT, 8), fg=sub_color, bg=bg_color, anchor="w")
         meta_lbl.pack(fill="x", side="top", pady=(0, 6))
 
-        # Body text area
-        text_frame = tk.Frame(container, bg=card_bg, bd=1, relief="solid", highlightbackground=CREAM_300, highlightthickness=1)
-        text_frame.pack(fill="both", expand=True)
-
-        text_widget = tk.Text(
-            text_frame,
-            font=(FONT_TEXT, 10),
-            fg=fg_color,
-            bg=card_bg,
-            selectbackground=CREAM_200,
-            selectforeground=MAROON_900,
-            wrap="word",
-            relief="flat",
-            padx=10,
-            pady=10,
-            height=6,
-            highlightthickness=0,
-        )
-        text_widget.tag_configure("normal", foreground=MAROON_900)
-        text_widget.tag_configure("dim", foreground=INK_MUTED)
-        text_widget.tag_configure("warn", foreground=WARNING)
-
-        scrollbar = tk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
-        scrollbar.pack(side="right", fill="y")
-        text_widget.config(yscrollcommand=scrollbar.set)
-        text_widget.pack(side="left", fill="both", expand=True)
-        text_widget.config(state="disabled")
-        text_widget.bind("<MouseWheel>", lambda e: text_widget.yview_scroll(int(-1 * (e.delta / 120)), "units"))
-
-        # Ask entry row (hidden initially)
-        ask_frame = tk.Frame(container, bg=bg_color)
-        ask_entry = tk.Entry(
-            ask_frame,
-            font=(FONT_TEXT, 9),
-            fg=fg_color,
-            bg=card_bg,
-            insertbackground=MAROON_900,
-            relief="flat",
-            highlightbackground=border_color,
-            highlightcolor=FOCUS_RING,
-            highlightthickness=1,
-        )
-        ask_entry.pack(fill="x", expand=True, ipady=4, pady=(6, 0))
-
-        def on_ask_submit(e):
-            q = ask_entry.get().strip()
-            if not q or self.on_ask is None:
-                return
-            ask_entry.delete(0, "end")
-            threading.Thread(target=self.on_ask, args=(q,), daemon=True).start()
-
-        ask_entry.bind("<Return>", on_ask_submit)
-
-        # Footer: Actions (Dictate, Ask, Copy)
+        # ---- bottom first (so the chat log gets the leftover space): input bar + footer
         footer = tk.Frame(container, bg=bg_color)
-        footer.pack(fill="x", side="bottom", pady=(8, 0))
+        footer.pack(fill="x", side="bottom", pady=(6, 0))
 
-        copy_btn = tk.Label(
-            footer,
-            text="Copy",
-            font=(FONT_TEXT, 9, "bold"),
-            fg=MAROON_800,
-            bg=card_bg,
-            padx=12,
-            pady=4,
-            cursor="hand2",
-            bd=1,
-            relief="solid",
-            highlightthickness=1,
-            highlightbackground=border_color,
-        )
-        copy_btn.pack(side="right", padx=(4, 0))
+        input_row = tk.Frame(container, bg=bg_color)
+        input_row.pack(fill="x", side="bottom", pady=(8, 0))
+
+        send_btn = tk.Label(input_row, text="Send ➤", font=(FONT_TEXT, 9, "bold"), fg=CREAM_50, bg=MAROON_700,
+                            padx=12, pady=7, cursor="hand2")
+        send_btn.pack(side="right", padx=(6, 0), fill="y")
+        send_btn.bind("<Button-1>", lambda e: self._submit())
+        send_btn.bind("<Enter>", lambda e: send_btn.config(bg=MAROON_600))
+        send_btn.bind("<Leave>", lambda e: send_btn.config(bg=MAROON_700 if not self._chat_busy else INK_MUTED))
+
+        entry = tk.Text(input_row, font=(FONT_TEXT, 10), fg=MAROON_900, bg=card_bg, insertbackground=MAROON_900,
+                        relief="flat", height=1, wrap="word", padx=8, pady=6, highlightthickness=1,
+                        highlightbackground=border_color, highlightcolor=FOCUS_RING, undo=True)
+        entry.pack(side="left", fill="x", expand=True)
+
+        # ---- chat log (a read-only Text: selectable, streams in place, scrolls)
+        log_frame = tk.Frame(container, bg=card_bg, highlightbackground=CREAM_300, highlightthickness=1)
+        log_frame.pack(fill="both", expand=True, side="top")
+        chat = tk.Text(log_frame, font=(FONT_TEXT, 10), fg=MAROON_900, bg=card_bg, selectbackground=CREAM_300,
+                       selectforeground=MAROON_900, wrap="word", relief="flat", padx=10, pady=8, height=6,
+                       highlightthickness=0, cursor="arrow", spacing1=1, spacing3=1)
+        scrollbar = tk.Scrollbar(log_frame, orient="vertical", command=chat.yview)
+        scrollbar.pack(side="right", fill="y")
+        chat.config(yscrollcommand=scrollbar.set)
+        chat.pack(side="left", fill="both", expand=True)
+        chat.bind("<MouseWheel>", lambda e: chat.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+        chat.tag_configure("who_ai", font=(FONT_TEXT, 8, "bold"), foreground=INK_MUTED, spacing1=8)
+        chat.tag_configure("who_user", font=(FONT_TEXT, 8, "bold"), foreground=INK_MUTED, justify="right",
+                           spacing1=10, rmargin=4)
+        chat.tag_configure("ai", foreground=MAROON_900, lmargin1=4, lmargin2=18, rmargin=24)
+        chat.tag_configure("ai_dim", foreground=INK_MUTED, lmargin1=4, lmargin2=18, rmargin=24)
+        chat.tag_configure("user_row", justify="right", rmargin=2)
+        chat.tag_configure("warn", foreground=WARNING, lmargin1=4, lmargin2=18)
+        chat.tag_configure("thinking", foreground=INK_MUTED, font=(FONT_TEXT, 9, "italic"), lmargin1=4)
+        chat.tag_configure("copylink", font=(FONT_TEXT, 8, "bold"), foreground=MAROON_700)
+        chat.tag_bind("copylink", "<Enter>", lambda e: chat.config(cursor="hand2"))
+        chat.tag_bind("copylink", "<Leave>", lambda e: chat.config(cursor="arrow"))
+        chat.config(state="disabled")
+
+        # ---- input behaviour: Enter sends, Shift+Enter = new line, placeholder, grows to 4 lines
+        def _focus_in(e):
+            self._activate()
+            if self._placeholder_on:
+                entry.delete("1.0", "end")
+                entry.config(fg=MAROON_900)
+                self._placeholder_on = False
+
+        def _focus_out(e):
+            if not entry.get("1.0", "end-1c").strip():
+                self._set_placeholder()
+
+        def _enter(e):
+            if e.state & 0x0001:            # Shift held → newline
+                return None
+            self._submit()
+            return "break"
+
+        def _grow_input(e=None):
+            lines = int(entry.index("end-1c").split(".")[0])
+            entry.config(height=min(4, max(1, lines)))
+
+        entry.bind("<FocusIn>", _focus_in)
+        entry.bind("<FocusOut>", _focus_out)
+        entry.bind("<Button-1>", lambda e: self._activate())
+        entry.bind("<Return>", _enter)
+        entry.bind("<KeyRelease>", _grow_input)
+
+        # ---- footer: resize grip + Copy all
+        copy_btn = tk.Label(footer, text="Copy all", font=(FONT_TEXT, 8, "bold"), fg=MAROON_800, bg=bg_color,
+                            cursor="hand2")
+        copy_btn.pack(side="right")
 
         def on_copy(e):
             root.clipboard_clear()
             root.clipboard_append(self.full_text())
-            copy_btn.config(text="Copied", bg=CREAM_200)
-            root.after(1500, lambda: copy_btn.config(text="Copy", bg=card_bg))
+            copy_btn.config(text="Copied ✓")
+            root.after(1500, lambda: copy_btn.config(text="Copy all"))
 
         copy_btn.bind("<Button-1>", on_copy)
-        copy_btn.bind("<Enter>", lambda e: copy_btn.config(bg=CREAM_200))
-        copy_btn.bind("<Leave>", lambda e: copy_btn.config(bg=card_bg))
+        copy_btn.bind("<Enter>", lambda e: copy_btn.config(fg=MAROON_600))
+        copy_btn.bind("<Leave>", lambda e: copy_btn.config(fg=MAROON_800))
 
-        ask_btn = None
-        # Dictation UI temporarily hidden from the main popup (not yet part of the
-        # shared Mac feature set — see As-Conciz/20-For-Meet-What-Consiz-Does-Today-Plain-Words.md).
-        # Backend (consiz/dictation.py, process_dictation, start_dictation_flow/stop_dictation
-        # below) is untouched — only this button is not created.
-        dictate_btn = None
-        if not self.light:
-            ask_btn = tk.Label(
-                footer,
-                text="Ask",
-                font=(FONT_TEXT, 9, "bold"),
-                fg=CREAM_50,
-                bg=MAROON_700,
-                padx=14,
-                pady=4,
-                cursor="hand2",
-                bd=0,
-                relief="flat",
-            )
-            ask_btn.pack(side="right", padx=(4, 0))
-            ask_btn.bind("<Button-1>", lambda e: self.toggle_ask())
-            ask_btn.bind("<Enter>", lambda e: ask_btn.config(bg=MAROON_600))
-            ask_btn.bind("<Leave>", lambda e: ask_btn.config(bg=MAROON_700))
-
-        # Resize grip / drag support
         grip = tk.Label(footer, text="⋰", font=(FONT_TEXT, 9), fg=sub_color, bg=bg_color, cursor="size_nw_se")
         grip.pack(side="left")
 
@@ -325,145 +307,270 @@ class PopupUI:
             self._win_w, self._win_h = win.winfo_width(), win.winfo_height()
 
         def do_resize(e):
-            dx = e.x_root - self._start_x
-            dy = e.y_root - self._start_y
-            nw = max(300, self._win_w + dx)
-            nh = max(160, self._win_h + dy)
+            nw = max(320, self._win_w + e.x_root - self._start_x)
+            nh = max(260, self._win_h + e.y_root - self._start_y)
             self.user_size = (nw, nh)
             win.geometry(f"{nw}x{nh}")
 
         grip.bind("<Button-1>", start_resize)
         grip.bind("<B1-Motion>", do_resize)
 
-        # Allow dragging the window from title bar
+        # drag the window by its title
         def start_drag(e):
             self._drag_x, self._drag_y = e.x, e.y
 
         def do_drag(e):
-            x = win.winfo_x() + (e.x - self._drag_x)
-            y = win.winfo_y() + (e.y - self._drag_y)
-            win.geometry(f"+{x}+{y}")
+            win.geometry(f"+{win.winfo_x() + e.x - self._drag_x}+{win.winfo_y() + e.y - self._drag_y}")
 
-        title_lbl.bind("<Button-1>", start_drag)
-        title_lbl.bind("<B1-Motion>", do_drag)
+        for w in (title_lbl, meta_lbl):
+            w.bind("<Button-1>", start_drag)
+            w.bind("<B1-Motion>", do_drag)
 
-        # Esc to close
         win.bind("<Escape>", lambda e: self.hide())
 
         self.window = win
-        self.title_lbl = title_lbl
-        self.meta_lbl = meta_lbl
-        self.text_widget = text_widget
-        self.ask_frame = ask_frame
-        self.ask_entry = ask_entry
-        self.copy_btn = copy_btn
-        self.ask_btn = ask_btn
-        self.dictate_btn = dictate_btn
+        self.title_lbl, self.meta_lbl, self.chat = title_lbl, meta_lbl, chat
+        self.text_widget = chat              # kept for older call sites
+        self.entry, self.send_btn, self.copy_btn = entry, send_btn, copy_btn
+        self._set_placeholder()
+        self._noactivate(True)
 
+    # -- focus handling: the popup must NOT steal focus on show (the user's text selection lives in
+    #    another app), but it must accept typing once the user clicks into the input.
+    def _hwnd(self) -> int:
+        return ctypes.windll.user32.GetParent(self.window.winfo_id()) or self.window.winfo_id()
+
+    def _noactivate(self, on: bool) -> None:
         try:
-            win.update_idletasks()
-            hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
-            old_ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, old_ex | WS_EX_NOACTIVATE)
+            hwnd = self._hwnd()
+            ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, (ex | WS_EX_NOACTIVATE) if on else (ex & ~WS_EX_NOACTIVATE))
         except Exception:
             pass
 
-        pass
+    def _activate(self) -> None:
+        self._noactivate(False)
+        try:
+            user32.SetForegroundWindow(self._hwnd())
+            self.entry.focus_force()
+        except Exception:
+            pass
+
+    def _set_placeholder(self) -> None:
+        self.entry.delete("1.0", "end")
+        self.entry.insert("1.0", "Ask a follow-up…")
+        self.entry.config(fg=INK_MUTED, height=1)
+        self._placeholder_on = True
+
+    # -- chat log primitives (UI thread only)
+    def _log(self, text: str, *tags: str) -> None:
+        self.chat.config(state="normal")
+        self.chat.insert("end", text, tags)
+        self.chat.config(state="disabled")
+
+    def _scroll_end(self) -> None:
+        self.chat.see("end")
+
+    def _clear_chat(self) -> None:
+        self.chat.config(state="normal")
+        self.chat.delete("1.0", "end")
+        self.chat.config(state="disabled")
+        self._lines.clear()
+        self._ai_open = False
+        self._ai_text = []
+        self._thinking = False
+        self._transcript = []
+
+    def _begin_ai(self) -> None:
+        """Start an assistant message: a small 'Consiz' label with its own Copy link."""
+        self._ai_open = True
+        self._ai_text = []
+        idx = len(self._msg_texts)
+        self._msg_texts.append("")
+        self._transcript.append(["Consiz", ""])
+        tag = f"copy{idx}"
+        self.chat.config(state="normal")
+        if self.chat.get("1.0", "end-1c"):
+            self.chat.insert("end", "\n")
+        self.chat.insert("end", "Consiz", ("who_ai",))
+        self.chat.insert("end", "   Copy", ("who_ai", "copylink", tag))
+        self.chat.insert("end", "\n", ("who_ai",))
+        self.chat.tag_bind(tag, "<Button-1>", lambda e, i=idx, t=tag: self._copy_msg(i, t))
+        self.chat.config(state="disabled")
+
+    def _copy_msg(self, idx: int, tag: str) -> None:
+        root = _get_root()
+        root.clipboard_clear()
+        root.clipboard_append(self._msg_texts[idx])
+        self.chat.config(state="normal")
+        r = self.chat.tag_ranges(tag)
+        if r:
+            self.chat.delete(r[0], r[1])
+            self.chat.insert(r[0], "   Copied ✓", ("who_ai", "copylink", tag))
+        self.chat.config(state="disabled")
+
+    def _add_user(self, text: str) -> None:
+        """A right-aligned maroon bubble sized to its text (an embedded Label, so it hugs the message)."""
+        self.chat.config(state="normal")
+        if self.chat.get("1.0", "end-1c"):
+            self.chat.insert("end", "\n")
+        self.chat.insert("end", "You\n", ("who_user",))
+        bubble = tk.Label(self.chat, text=text, font=(FONT_TEXT, 10), fg=CREAM_50, bg=MAROON_700, justify="left",
+                          anchor="w", wraplength=max(180, int((self.window.winfo_width() or WIDTH) * 0.68)),
+                          padx=11, pady=6)
+        self.chat.window_create("end", window=bubble, padx=2, pady=2)
+        self.chat.insert("end", "\n")
+        self.chat.tag_add("user_row", "end-2c linestart", "end-1c")
+        self.chat.config(state="disabled")
+        self._transcript.append(["You", text])
+        self._ai_open = False
+        self._scroll_end()
+        self._fit_height()
+
+    def _show_thinking(self) -> None:
+        if self._thinking:
+            return
+        self._thinking = True
+        self.chat.config(state="normal")
+        self.chat.mark_set("think_start", "end-1c")
+        self.chat.mark_gravity("think_start", "left")
+        self.chat.insert("end", "\nConsiz is thinking…", ("thinking",))
+        self.chat.config(state="disabled")
+        self._scroll_end()
+
+    def _hide_thinking(self) -> None:
+        if not self._thinking:
+            return
+        self._thinking = False
+        self.chat.config(state="normal")
+        self.chat.delete("think_start", "end-1c")
+        self.chat.config(state="disabled")
+
+    def _set_chat_busy(self, busy: bool) -> None:
+        self._chat_busy = busy
+        self.send_btn.config(bg=INK_MUTED if busy else MAROON_700, text="…" if busy else "Send ➤")
+
+    def _submit(self) -> None:
+        if self._chat_busy or self._placeholder_on or self.on_ask is None:
+            return
+        q = self.entry.get("1.0", "end-1c").strip()
+        if not q:
+            return
+        self.entry.delete("1.0", "end")
+        self.entry.config(height=1)
+        self._add_user(q)
+        self._show_thinking()
+        self._set_chat_busy(True)
+        threading.Thread(target=self._run_ask, args=(q,), daemon=True).start()
+
+    def _run_ask(self, q: str) -> None:
+        try:
+            self.on_ask(q)
+        except Exception as e:
+            _dispatch(self._hide_thinking)
+            _dispatch(self._append, f"⚠ {_friendly_error(str(e))}")
+        finally:
+            _dispatch(self._set_chat_busy, False)
+
+    def new_chat(self) -> None:
+        if self.window is None:
+            return
+        self._clear_chat()
+        self.history.clear()
+        self.last_answer = ""
+        self._msg_texts.clear()
+        self._set_title("New chat")
+        self._set_meta("Ask anything about your selected text")
+        self._log("Ask a question about the text you selected, or anything else.", "ai_dim")
+
+    def _fit_height(self) -> None:
+        """Grow the window to fit the conversation (until 65% of the screen); never shrink a user-sized one."""
+        if self.window is None or self.user_size is not None:
+            return
+        try:
+            display_lines = self.chat.count("1.0", "end", "displaylines")
+            n = int(display_lines[0]) if display_lines else len(self._lines)
+        except Exception:
+            n = len(self._lines)
+        sh = self.window.winfo_screenheight()
+        want = min(max(200 + n * 19, 260), int(sh * 0.65))
+        cur_h = self.window.winfo_height()
+        if want > cur_h:
+            x, y, w = self.window.winfo_x(), self.window.winfo_y(), self.window.winfo_width()
+            if y + want > sh - 10:
+                y = max(10, sh - want - 10)
+            self.window.geometry(f"{w}x{want}+{x}+{y}")
 
     def _compute_height(self) -> int:
         if self.user_size:
             return self.user_size[1]
-        line_count = len(self._lines)
-        for l in self._lines:
-            if len(l) > 42:
-                line_count += len(l) // 42
         sh = self.window.winfo_screenheight() if self.window else 900
-        max_h = int(sh * 0.65)
-        ask_h = 42 if self.ask_visible else 0
-        computed = 120 + max(3, line_count) * 22 + ask_h
-        return min(max(computed, 180), max_h)
+        return min(max(260, 200 + len(self._lines) * 19), int(sh * 0.65))
 
     def _show_at(self, point: tuple[int, int], title: str, meta: str) -> None:
         if self.window is None:
             self._build()
 
-        self._lines.clear()
-        self.text_widget.config(state="normal")
-        self.text_widget.delete("1.0", "end")
-        self.text_widget.config(state="disabled")
-
+        self._clear_chat()
+        self.history.clear()
+        self._msg_texts.clear()
         self.title_lbl.config(text=title)
         self.meta_lbl.config(text=meta)
-        self.copy_btn.config(text="Copy")
+        self.copy_btn.config(text="Copy all")
+        self._set_chat_busy(False)
+        self._set_placeholder()
 
         px, py = point
         w = self.user_size[0] if self.user_size else WIDTH
         h = self._compute_height()
-
-        # Ensure on screen
         sw = self.window.winfo_screenwidth()
         sh = self.window.winfo_screenheight()
         x = min(max(px + 15, 10), sw - w - 10)
         y = min(max(py + 15, 10), sh - h - 10)
-
         self.window.geometry(f"{w}x{h}+{x}+{y}")
 
-        # Show without stealing focus (W-07)
+        # Show without stealing focus (W-07); typing is enabled only when the user clicks the input.
+        self._noactivate(True)
         try:
-            hwnd = ctypes.windll.user32.GetParent(self.window.winfo_id()) or self.window.winfo_id()
+            hwnd = self._hwnd()
             user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
             user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
         except Exception:
             self.window.deiconify()
 
     def _append(self, line: str, dim: bool = False) -> None:
+        self._hide_thinking()
+        if not self._ai_open:
+            self._begin_ai()
         self._lines.append(line)
-        self.text_widget.config(state="normal")
-        prefix = "\n" if self.text_widget.get("1.0", "end-1c") else ""
-        tag = "warn" if line.startswith("⚠") else ("dim" if dim else "normal")
-        self.text_widget.insert("end", prefix + line, tag)
-        self.text_widget.see("end")
-        self.text_widget.config(state="disabled")
-
-        if self.window and self.user_size is None:
-            new_h = self._compute_height()
-            cur_h = self.window.winfo_height()
-            if new_h > cur_h:
-                cur_x = self.window.winfo_x()
-                cur_y = self.window.winfo_y()
-                w = self.window.winfo_width()
-                sh = self.window.winfo_screenheight()
-                if cur_y + new_h > sh - 10:
-                    cur_y = max(10, sh - new_h - 10)
-                self.window.geometry(f"{w}x{new_h}+{cur_x}+{cur_y}")
+        self._ai_text.append(line)
+        self._msg_texts[-1] = "\n".join(self._ai_text)
+        self._transcript[-1][1] = self._msg_texts[-1]
+        tag = "warn" if line.startswith("⚠") else ("ai_dim" if dim else "ai")
+        self.chat.config(state="normal")
+        self.chat.insert("end", line + "\n", (tag,))
+        self.chat.config(state="disabled")
+        self._scroll_end()
+        self._fit_height()
 
     def _set_title(self, title: str) -> None:
         if self.title_lbl:
             self.title_lbl.config(text=title)
 
     def _set_lines(self, pairs: list[tuple[str, bool]]) -> None:
-        self._lines.clear()
-        self.text_widget.config(state="normal")
-        self.text_widget.delete("1.0", "end")
-        for line, _ in pairs:
-            self._append(line)
-        self.text_widget.config(state="disabled")
+        self._clear_chat()
+        self._msg_texts.clear()
+        for line, dim in pairs:
+            self._append(line, dim)
 
     def _set_meta(self, meta: str) -> None:
         if self.meta_lbl:
             self.meta_lbl.config(text=meta)
 
     def toggle_ask(self) -> None:
-        if self.ask_frame is None:
-            return
-        self.ask_visible = not self.ask_visible
-        if self.ask_visible:
-            self.ask_frame.pack(fill="x", side="top", pady=(0, 6))
-            self.window.geometry(f"{self.window.winfo_width()}x{self.window.winfo_height() + 40}")
-            self.ask_entry.focus_set()
-        else:
-            self.ask_frame.pack_forget()
-            self.window.geometry(f"{self.window.winfo_width()}x{max(180, self.window.winfo_height() - 40)}")
+        """Kept for compatibility: the input bar is always visible now; this just focuses it."""
+        if self.window is not None:
+            self._activate()
 
     def _on_audio_level(self, rms: float) -> None:
         if not self._is_dictating:
@@ -563,19 +670,14 @@ class PopupUI:
             if self._is_dictating:
                 self._is_dictating = False
                 self._recorder.cancel()
-                if self.dictate_btn:
-                    self.dictate_btn.config(text="🎙 Dictate", fg="#111111" if self.light else "#f0f2f5")
             if self.window is not None:
                 self.window.withdraw()
-            if self.answer_ui is not None:
-                self.answer_ui.hide()
-            if self.ask_visible:
-                self.toggle_ask()
+                self._noactivate(True)
 
         _dispatch(_do_hide)
 
     def full_text(self) -> str:
-        return "\n".join(self._lines)
+        return "\n\n".join(f"{who}: {text}" for who, text in self._transcript if text)
 
     # ---------------------------------------------------------- worker-thread API
     def show_result(self, res: Result, at=None):
@@ -659,12 +761,41 @@ class PopupUI:
         _dispatch(self._set_meta, f"{res.content_type} · {res.source_app} · {time.perf_counter() - t0:.1f}s")
 
     def show_followup(self, question: str, stream) -> None:
-        if self.answer_ui is None:
-            self.answer_ui = PopupUI(light=True)
-        cx, cy = _get_cursor_pos()
-        at = (cx + WIDTH + 20, cy)
-        res = Result(title="Assistant", content_type=f"you asked: {question[:40]}", source_app="", stream=stream)
-        self.answer_ui.show_result(res, at=at)
+        """Stream the answer to a follow-up into the SAME chat window (worker thread)."""
+        collected: list[str] = []
+        buf = ""
+        first_line = True
+
+        def emit(line: str) -> None:
+            _dispatch(self._append, _pretty_line(line))
+
+        try:
+            for piece in stream:
+                collected.append(piece)
+                buf += piece
+                while "\n" in buf:
+                    done, buf = buf.split("\n", 1)
+                    if not done.strip():
+                        continue
+                    if first_line:
+                        first_line = False
+                        if done.strip().strip("*`#_ ").upper().startswith("KIND"):
+                            continue
+                    emit(done)
+            if buf.strip() and not (first_line and buf.strip().strip("*`#_ ").upper().startswith("KIND")):
+                emit(buf)
+        except LLMError as e:
+            _dispatch(self._append, "⚠ " + _friendly_error(str(e)))
+            _dispatch(self._append, f"({e})", True)
+            return
+        text = "".join(collected)
+        if text.upper().lstrip("*`#_ ").startswith("KIND"):
+            text = text.split("\n", 1)[1] if "\n" in text else ""
+        if not text.strip():
+            _dispatch(self._append, "⚠ The AI sent an empty answer. Try asking again.")
+            return
+        self.history.append({"role": "user", "content": question})
+        self.history.append({"role": "assistant", "content": text.strip()})
 
 
 def _friendly_error(detail: str) -> str:

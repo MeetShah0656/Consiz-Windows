@@ -10,6 +10,15 @@ from dotenv import load_dotenv
 PROJECT_ENV = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(PROJECT_ENV)
 
+# Release builds bake in the PUBLIC settings only (server URL, Google desktop client). Written by
+# build_exe.py into consiz/_build_config.py (git-ignored); a real .env / environment value still wins.
+try:
+    from ._build_config import BAKED as _BAKED
+    for _k, _v in _BAKED.items():
+        os.environ.setdefault(_k, _v)
+except ImportError:
+    pass
+
 
 def ensure_env_template() -> tuple[Path, bool]:
     """Create <project>/.env from .env.example if it doesn't exist yet. Returns (path, just_created)."""

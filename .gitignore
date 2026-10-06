@@ -11,3 +11,4 @@ dist/
 *.pyc
 *.backup
 .env.txt
+consiz/_build_config.py
