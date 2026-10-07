@@ -170,7 +170,15 @@ def _client_ip(request: Request) -> str:
 # ------------------------------------------------------------------ routes
 @app.get("/health")
 def health():
-    return {"ok": True}
+    """Also reports which storage backs the daily limits (no secrets) and whether it is reachable."""
+    storage, db_ok = ("postgres" if _use_pg() else "sqlite"), True
+    try:
+        with _db() as (cur, ph):
+            cur.execute("SELECT 1")
+    except Exception as e:
+        db_ok = False
+        return {"ok": True, "storage": storage, "db_ok": db_ok, "db_error": type(e).__name__}
+    return {"ok": True, "storage": storage, "db_ok": db_ok}
 
 
 @app.post("/v1/chat/completions")
