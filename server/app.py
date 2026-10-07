@@ -205,16 +205,6 @@ def home():
         '<p>Read our <a href="/privacy">Privacy Policy</a>.</p>'))
 
 
-@app.get("/{filename}", response_class=PlainTextResponse, include_in_schema=False)
-def search_console_file(filename: str):
-    """Google Search Console 'HTML file' ownership check. Serves ONLY the one file name we configured
-    (GOOGLE_VERIFY_FILE), never an arbitrary googleXXXX.html — otherwise anyone could claim this site."""
-    expected = _cfg("GOOGLE_VERIFY_FILE", "google4a2c47af0ffeb6d0.html")
-    if expected and filename == expected:
-        return f"google-site-verification: {expected}"
-    raise HTTPException(404, "Not found")
-
-
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy():
     return _page(f"{APP_NAME} Privacy Policy", (
@@ -315,3 +305,14 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
             upstream.close()
 
     return StreamingResponse(relay(), media_type="text/event-stream")
+
+
+# Keep this LAST: a catch-all path would otherwise shadow the fixed routes above.
+@app.get("/{filename}", response_class=PlainTextResponse, include_in_schema=False)
+def search_console_file(filename: str):
+    """Google Search Console 'HTML file' ownership check. Serves ONLY the one file name we configured
+    (GOOGLE_VERIFY_FILE), never an arbitrary googleXXXX.html — otherwise anyone could claim this site."""
+    expected = _cfg("GOOGLE_VERIFY_FILE", "google4a2c47af0ffeb6d0.html")
+    if expected and filename == expected:
+        return f"google-site-verification: {expected}"
+    raise HTTPException(404, "Not found")
