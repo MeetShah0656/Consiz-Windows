@@ -46,7 +46,8 @@ BODY = {"messages": [{"role": "user", "content": "hello"}]}
 
 
 def test_health_open(client):
-    assert client.get("/health").json() == {"ok": True}
+    body = client.get("/health").json()
+    assert body["ok"] is True and body["storage"] == "sqlite" and body["db_ok"] is True
 
 
 def test_requires_sign_in(client):
