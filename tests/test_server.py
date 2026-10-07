@@ -50,6 +50,12 @@ def test_health_open(client):
     assert body["ok"] is True and body["storage"] == "sqlite" and body["db_ok"] is True
 
 
+def test_public_pages_for_google_consent_screen(client):
+    home, priv = client.get("/"), client.get("/privacy")
+    assert home.status_code == 200 and "Conciz" in home.text and "/privacy" in home.text
+    assert priv.status_code == 200 and "privacy policy" in priv.text.lower() and "OpenRouter" in priv.text
+
+
 def test_requires_sign_in(client):
     assert client.post("/v1/chat/completions", json=BODY).status_code == 401
 
