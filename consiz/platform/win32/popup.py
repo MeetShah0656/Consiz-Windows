@@ -158,6 +158,7 @@ class PopupUI:
         self._chat_busy = False
         self._action_n = 0
         self._minimized = False
+        self._pc_note = ""
         self._saved_h = 0
         self._placeholder_on = True
         self.window: tk.Toplevel | None = None
@@ -736,10 +737,11 @@ class PopupUI:
         return "\n\n".join(f"{who}: {text}" for who, text in self._transcript if text)
 
     # ---------------------------------------------------------- worker-thread API
-    def open_pc_chat(self, at=None) -> None:
+    def open_pc_chat(self, at=None, note: str = "") -> None:
         """Open an empty chat for "Ask about my PC" (no selection needed) with a few starter questions."""
         point = at or _get_cursor_pos()
         self.mode = "pc"
+        self._pc_note = note
         self.context, self.last_answer = "", ""
         _dispatch(self._show_at, point, "Ask about my PC", "Reads program names, memory use and window titles on this PC")
         _dispatch(self._pc_intro)
@@ -749,6 +751,8 @@ class PopupUI:
                     "How full is my disk?")
 
     def _pc_intro(self) -> None:
+        if self._pc_note:
+            self._log(self._pc_note + chr(10), "ai_dim")
         self._log("Ask me anything about this PC. Tap a question or type your own:" + chr(10), "ai_dim")
         for i, q in enumerate(self._PC_STARTERS):
             tag = f"chip{i}"

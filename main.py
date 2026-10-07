@@ -115,6 +115,10 @@ def on_trigger(source: str) -> None:
     output.notify(f"trigger: {source}")
     ctx = capture()
     output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} — processing…")
+    if ctx.is_empty and POPUP is not None and sys.platform == "win32":
+        # Nothing selected: instead of a dead-end error, offer to look at the PC (it asks permission first).
+        if on_pc_trigger("nothing-selected", note="Nothing was selected, so this is Ask about my PC."):
+            return
     res = process(ctx)
     if POPUP is not None:
         POPUP.show_result(res)
@@ -171,16 +175,18 @@ def _confirm_window_read(titles: list[str]) -> bool:
     return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - read window text", 0x24) == 6
 
 
-def on_pc_trigger(source: str) -> None:
-    """Hotkey/tray: open the 'Ask about my PC' chat (no selection needed)."""
+def on_pc_trigger(source: str, note: str = "") -> bool:
+    """Hotkey/tray: open the 'Ask about my PC' chat (no selection needed). True if the chat was opened."""
     if _login_needed():
-        return
+        return True                                   # the sign-in window is showing instead
     if not _pc_mode_consent():
         output.notify("PC mode was not allowed")
-        return
+        return False
     output.notify(f"PC mode: {source}")
-    if POPUP is not None:
-        POPUP.open_pc_chat()
+    if POPUP is None:
+        return False
+    POPUP.open_pc_chat(note=note)
+    return True
 
 
 def main() -> int:
