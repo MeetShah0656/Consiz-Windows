@@ -168,52 +168,82 @@ def _client_ip(request: Request) -> str:
 
 
 # ------------------------------------------------------------------ public pages (Google consent screen links)
+# App name here MUST match the OAuth consent screen name exactly ("Consiz"): Google compares them.
+APP_NAME = "Consiz"
+
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title><style>
-body{{font-family:Segoe UI,Arial,sans-serif;background:#F8F1E3;color:#43151B;margin:0;line-height:1.55}}
-main{{max-width:720px;margin:0 auto;padding:40px 20px}}h1{{color:#611E29}}a{{color:#7A2835}}li{{margin:6px 0}}
-</style></head><body><main>{body}</main></body></html>"""
+{verify}<title>{title}</title><style>
+body{{font-family:Segoe UI,Arial,sans-serif;background:#F8F1E3;color:#43151B;margin:0;line-height:1.6}}
+main{{max-width:760px;margin:0 auto;padding:40px 20px}}h1{{color:#611E29}}h3{{color:#611E29;margin-top:28px}}
+a{{color:#7A2835}}li{{margin:6px 0}}footer{{margin-top:40px;font-size:14px}}
+</style></head><body><main>{body}<footer><a href="/">Home</a> &middot; <a href="/privacy">Privacy Policy</a> &middot;
+Contact: <a href="mailto:{contact}">{contact}</a></footer></main></body></html>"""
 
 
 def _contact() -> str:
     return _cfg("CONTACT_EMAIL", "alpha.kore25@gmail.com")
 
 
+def _page(title: str, body: str) -> str:
+    """GOOGLE_SITE_VERIFICATION (optional) = the content value of the Search Console HTML-tag verification."""
+    token = _cfg("GOOGLE_SITE_VERIFICATION")
+    verify = f'<meta name="google-site-verification" content="{token}">' if token else ""
+    return _PAGE.format(verify=verify, title=title, body=body, contact=_contact())
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return _PAGE.format(title="Conciz", body=(
-        "<h1>Conciz</h1>"
-        "<p>Conciz is a Windows app: select any text or file, press the middle mouse button, and a small window "
-        "explains it in short, simple bullets. You can then ask follow-up questions in the same window.</p>"
-        "<p>You sign in with Google so we can keep the service fair for everyone (a daily limit per person).</p>"
-        '<p><a href="/privacy">Privacy policy</a> &middot; Contact: '
-        f'<a href="mailto:{_contact()}">{_contact()}</a></p>'))
+    return _page(APP_NAME, (
+        f"<h1>{APP_NAME}</h1>"
+        f"<p><b>{APP_NAME}</b> is a Windows desktop app that explains anything on your screen. Select some text "
+        "or a file, press the middle mouse button, and a small window shows a short, simple explanation, summary, "
+        "translation or answer. You can then ask follow-up questions in the same chat window.</p>"
+        "<h3>Why sign in with Google?</h3>"
+        f"<p>{APP_NAME} uses Google Sign-In only to know who is using the service, so we can apply a fair daily "
+        "limit per person and prevent abuse. We request only your basic profile (name and email address). "
+        "We do not access your Gmail, Drive, contacts, calendar or any other Google data.</p>"
+        '<p>Read our <a href="/privacy">Privacy Policy</a>.</p>'))
 
 
 @app.get("/privacy", response_class=HTMLResponse)
 def privacy():
-    return _PAGE.format(title="Conciz privacy policy", body=(
-        "<h1>Conciz privacy policy</h1>"
-        "<h3>What we collect</h3><ul>"
-        "<li><b>Google sign-in:</b> your email address, name and Google account ID. Used only to sign you in "
-        "and to count your daily usage. We never see your Google password.</li>"
-        "<li><b>Usage counts:</b> how many answers you asked for each day, linked to your account ID, and a "
-        "per-day count for your network (IP address) to prevent abuse.</li>"
-        "<li><b>What you select:</b> the text you ask Conciz about is sent through our server to an AI provider "
-        "(OpenRouter and the AI model it routes to) only to produce your answer. We do not store your text or the "
-        "answers on our server. Sensitive patterns such as passwords and card numbers are removed on your "
-        "computer before anything is sent.</li></ul>"
-        "<h3>What we do not do</h3><ul>"
-        "<li>We do not sell your data or use it for advertising.</li>"
-        "<li>We do not read your files or screen except for the selection you choose to send.</li></ul>"
-        "<h3>Your choices</h3><ul>"
-        "<li>Use <i>Sign out</i> in the tray menu to remove the sign-in from your computer.</li>"
-        f'<li>To delete your account data (email and usage counts), email <a href="mailto:{_contact()}">'
-        f"{_contact()}</a>.</li>"
-        "<li>You can revoke access any time at myaccount.google.com/permissions.</li></ul>"
-        "<h3>Data providers</h3><p>Google (sign-in), OpenRouter and its model providers (answers), Render "
-        "(hosting) and Neon (database of usage counts).</p>"
-        f'<p>Contact: <a href="mailto:{_contact()}">{_contact()}</a></p>'))
+    return _page(f"{APP_NAME} Privacy Policy", (
+        f"<h1>{APP_NAME} Privacy Policy</h1>"
+        "<p>Last updated: October 2026. This policy explains what information the "
+        f"{APP_NAME} Windows app and its service collect, how it is used, and your choices.</p>"
+        "<h3>Information we collect</h3><ul>"
+        "<li><b>Google account information:</b> when you sign in with Google we receive your name, email address "
+        "and a unique Google account ID. We never receive your Google password.</li>"
+        "<li><b>Usage counts:</b> the number of answers you request each day, linked to your Google account ID "
+        "and email, plus a daily count per network (IP address) to prevent abuse.</li>"
+        "<li><b>Content you choose to send:</b> the text (or file excerpt) you select and the follow-up questions "
+        "you type are sent through our server to an AI provider to produce your answer.</li></ul>"
+        "<h3>How we use it</h3><ul>"
+        "<li>Google account information: to sign you in and to apply daily usage limits. Nothing else.</li>"
+        "<li>Selected content and questions: only to generate your answer. We do not store them on our server "
+        "and we do not use them to train models. The AI provider (OpenRouter and the model it routes to) processes "
+        "them under its own terms.</li>"
+        "<li>On your computer, sensitive patterns such as passwords, API keys and card numbers are removed "
+        "before anything is sent.</li></ul>"
+        "<h3>Google user data</h3>"
+        f"<p>{APP_NAME}'s use and transfer of information received from Google APIs adheres to the "
+        '<a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data '
+        "Policy</a>, including the Limited Use requirements. We use Google data only for sign-in and usage limits. "
+        "We do not sell it, do not use it for advertising, and do not let people read it except as needed to run "
+        "the service or comply with law.</p>"
+        "<h3>Sharing</h3><p>We do not sell your data. We share information only with the services that run "
+        "the product: Google (sign-in), OpenRouter and its AI model providers (answers), Render (hosting) and Neon "
+        "(database for usage counts).</p>"
+        "<h3>Retention and deletion</h3><p>Usage counts and account identifiers are kept only as long as needed to "
+        "run daily limits and prevent abuse. To delete your data, email us at the address below and we will remove "
+        "it. You can also tap <i>Sign out</i> in the app's tray menu to remove the sign-in from your computer, and "
+        'revoke access at any time at <a href="https://myaccount.google.com/permissions">'
+        "myaccount.google.com/permissions</a>.</p>"
+        "<h3>Security</h3><p>Connections use HTTPS. The sign-in token is stored in the Windows Credential Manager. "
+        "Our AI provider key is kept only on our server, never in the app.</p>"
+        "<h3>Children</h3><p>The service is not directed to children under 13.</p>"
+        "<h3>Changes and contact</h3><p>We may update this policy and will change the date above. Questions or "
+        f'deletion requests: <a href="mailto:{_contact()}">{_contact()}</a>.</p>'))
 
 
 # ------------------------------------------------------------------ routes

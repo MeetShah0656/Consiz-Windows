@@ -52,8 +52,9 @@ def test_health_open(client):
 
 def test_public_pages_for_google_consent_screen(client):
     home, priv = client.get("/"), client.get("/privacy")
-    assert home.status_code == 200 and "Conciz" in home.text and "/privacy" in home.text
-    assert priv.status_code == 200 and "privacy policy" in priv.text.lower() and "OpenRouter" in priv.text
+    assert home.status_code == 200 and "Consiz" in home.text and 'href="/privacy"' in home.text
+    assert priv.status_code == 200 and "Privacy Policy" in priv.text and "OpenRouter" in priv.text
+    assert "Limited Use" in priv.text
 
 
 def test_requires_sign_in(client):
