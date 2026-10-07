@@ -15,7 +15,7 @@ from . import security
 
 MAX_CHARS = 6500                 # the whole snapshot block; keeps the request small and fast
 CACHE_SECONDS = 15               # follow-up questions inside this window reuse the same snapshot
-_cache: dict = {"at": 0.0, "text": "", "summary": ""}
+_cache: dict = {"at": 0.0, "text": "", "summary": "", "windows": []}
 _lock = threading.Lock()
 
 
@@ -67,9 +67,9 @@ def render(snap: dict) -> tuple[str, str]:
 
     lines += ["", "OPEN WINDOWS (title only; contents are not visible)"]
     wins = snap["windows"][:30]
-    for w in wins:
+    for n, w in enumerate(wins, 1):
         flag = " [FOCUSED]" if w["foreground"] else (" [minimized]" if w["minimized"] else "")
-        lines.append(f"- {w['app']}: {w['title']}{flag}")
+        lines.append(f"[{n}] {w['app']}: {w['title']}{flag}")
     if not wins:
         lines.append("- (none found)")
 
@@ -103,7 +103,129 @@ def get_context(collect=None, force: bool = False) -> tuple[str, str]:
     if collect is None:
         from . import sysinfo
         collect = sysinfo.snapshot
-    text, summary = render(collect())
+    snap = collect()
+    text, summary = render(snap)
     with _lock:
-        _cache.update(at=time.time(), text=text, summary=summary)
+        _cache.update(at=time.time(), text=text, summary=summary, windows=list(snap["windows"][:30]))
     return text, summary
+
+
+def last_windows() -> list[dict]:
+    """The numbered windows from the latest snapshot ([1] = first), for READ / focus-window lookups."""
+    with _lock:
+        return list(_cache["windows"])
+
+
+# ====================================================================== layer 3: reading INSIDE windows
+# The model first sees only window titles. If a question needs what is inside a window it replies
+# "READ: 2, 5" (window numbers). Code then — only after the user allows it — reads those windows' text,
+# removes secrets, and asks the model again with that text attached.
+import re
+
+SENSITIVE_APPS = {"keepass.exe", "keepassxc.exe", "1password.exe", "bitwarden.exe", "lastpass.exe",
+                  "dashlane.exe", "enpass.exe", "nordpass.exe", "authy desktop.exe", "mstsc.exe"}
+SENSITIVE_TITLE = re.compile(r"(?i)password|passcode|incognito|inprivate|private browsing|net ?banking|"
+                             r"\bbank\b|paypal|wallet|authenticator|\b2fa\b|one-time|\botp\b")
+BROWSERS = {"chrome.exe", "brave.exe", "msedge.exe", "firefox.exe", "opera.exe", "vivaldi.exe"}
+READ_RE = re.compile(r"^\W*READ\s*:\s*([\d,\s]+)", re.IGNORECASE)
+MAX_READ_WINDOWS = 3
+MAX_PER_WINDOW = 6000
+MAX_TOTAL = 12000
+_allowed: set[int] = set()            # windows the user approved during this run of the app
+
+
+def sensitive_reason(win: dict) -> str | None:
+    """Why a window must never be read (password managers, private/banking windows), or None."""
+    if win["app"].lower() in SENSITIVE_APPS:
+        return "it is a password manager or remote-desktop window"
+    if SENSITIVE_TITLE.search(win["title"]):
+        return "its title looks private (password, banking, incognito...)"
+    return None
+
+
+def parse_read(first_line: str, n_windows: int) -> list[int]:
+    """'READ: 2, 5' -> [2, 5] (1-based, valid, unique, at most MAX_READ_WINDOWS). Not a READ line -> []."""
+    m = READ_RE.match(first_line.strip())
+    if not m:
+        return []
+    out: list[int] = []
+    for tok in re.split(r"[,\s]+", m.group(1).strip()):
+        if tok.isdigit() and 1 <= int(tok) <= n_windows and int(tok) not in out:
+            out.append(int(tok))
+    return out[:MAX_READ_WINDOWS]
+
+
+def _clean_stream(pieces, drop):
+    """Pass a text stream through line by line, dropping lines for which drop(line) is true."""
+    buf = ""
+    for p in pieces:
+        buf += p
+        while "\n" in buf:
+            line, buf = buf.split("\n", 1)
+            if not drop(line):
+                yield line + "\n"
+    if buf and not drop(buf):
+        yield buf
+
+
+def gather_contents(indices: list[int], windows: list[dict], read_text, confirm, notify) -> tuple[str, bool]:
+    """(contents block for the model, declined). Asks `confirm(titles)` once for windows not yet approved."""
+    wins = [(i, windows[i - 1]) for i in indices]
+    blocked = [(i, w, sensitive_reason(w)) for i, w in wins]
+    ok = [(i, w) for i, w, why in blocked if not why]
+    notes = [f"[{i}] {w['app']}: NOT READ — {why}." for i, w, why in blocked if why]
+    new = [w for _, w in ok if w["hwnd"] not in _allowed]
+    if new and not confirm([f"{w['app']}: {w['title']}" for w in new]):
+        return "", True
+    _allowed.update(w["hwnd"] for _, w in ok)
+
+    parts, used = [], 0
+    for i, w in ok:
+        notify(f"Reading: {w['title'][:50]}")
+        try:
+            text, method = read_text(w["hwnd"])
+        except Exception as e:
+            text, method = "", f"error {type(e).__name__}"
+        text, _found = security.redact(text or "")
+        text = text[:MAX_PER_WINDOW]
+        text = text[:max(0, MAX_TOTAL - used)]
+        used += len(text)
+        if w["app"].lower() in BROWSERS and len(text) < 250:
+            text += ("\n(Only the browser's own controls were readable. Browsers hide page text from other apps "
+                     "unless accessibility is on: open chrome://accessibility (or edge://, brave://) and turn on "
+                     "'Native accessibility API support', then ask again.)")
+        if not text.strip():
+            text = "(nothing readable — this app does not share its text with other programs)"
+        parts.append(f"[{i}] {w['app']}: {w['title']}\n{text}")
+    return "\n\n".join(notes + parts), False
+
+
+def stream_answer(question: str, history: list[dict], snapshot_text: str, windows: list[dict], *,
+                  stream_fn, read_text, confirm, notify):
+    """Yield the answer text. Handles the READ round-trip; everything else streams straight through."""
+    from . import llm
+    pieces = stream_fn(llm.pc_messages(snapshot_text, history, question))
+    buf, decided = "", False
+    for piece in pieces:
+        buf += piece
+        if not decided and ("\n" in buf or len(buf) >= 90):
+            decided = True
+            if parse_read(buf.lstrip().split("\n", 1)[0], len(windows)):
+                break                                   # a READ request: do not show it, handle below
+            yield buf
+        elif decided:
+            yield piece
+    else:
+        if not decided:
+            if not parse_read(buf.strip().split("\n", 1)[0], len(windows)):
+                yield buf
+                return
+    indices = parse_read(buf.lstrip().split("\n", 1)[0], len(windows))
+    if not indices:
+        return
+    block, declined = gather_contents(indices, windows, read_text, confirm, notify)
+    if declined:
+        yield "- You chose not to let me read that window, so I can't answer from what is inside it.\n"
+        return
+    msgs = llm.pc_messages(snapshot_text, history, question, contents=block)
+    yield from _clean_stream(stream_fn(msgs), lambda ln: bool(READ_RE.match(ln.strip())))

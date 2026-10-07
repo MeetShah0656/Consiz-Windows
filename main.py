@@ -156,6 +156,21 @@ def _pc_mode_consent() -> bool:
     return True
 
 
+def _read_window(hwnd: int) -> tuple[str, str]:
+    from consiz.platform.win32.readwin import read_window_text
+    return read_window_text(hwnd)
+
+
+def _confirm_window_read(titles: list[str]) -> bool:
+    """Layer 3 permission: name the exact windows before any text inside them is read or sent."""
+    import ctypes
+    nl = chr(10)
+    msg = ("Consiz wants to read the text inside:" + nl + nl + nl.join("  - " + t[:90] for t in titles) + nl + nl
+           + "This text (passwords and keys removed) is sent to the AI to answer your question. "
+           "Nothing is changed or sent anywhere else." + nl + nl + "Allow for this session?")
+    return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - read window text", 0x24) == 6
+
+
 def on_pc_trigger(source: str) -> None:
     """Hotkey/tray: open the 'Ask about my PC' chat (no selection needed)."""
     if _login_needed():
@@ -294,9 +309,13 @@ def main() -> int:
             except Exception as e:
                 raise llm.LLMError(f"could not read the PC: {e}")
             _dispatch(POPUP._set_meta, f"Looked at: {summary} · {time.strftime('%H:%M:%S')}")
-            msgs = llm.pc_messages(text, list(POPUP.history), question)
-        else:
-            msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question)
+            stream = pc_mode.stream_answer(
+                question, list(POPUP.history), text, pc_mode.last_windows(),
+                stream_fn=llm.stream_messages, read_text=_read_window, confirm=_confirm_window_read,
+                notify=lambda m: _dispatch(POPUP._set_meta, m))
+            POPUP.show_followup(question, stream)
+            return
+        msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question)
         POPUP.show_followup(question, llm.stream_messages(msgs))
 
     def dictate_handler(ctx: CapturedContext, instruction) -> None:

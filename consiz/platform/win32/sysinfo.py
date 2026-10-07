@@ -6,7 +6,7 @@ model sees, after redaction. It never reads inside windows — only their titles
 Snapshot contract (same field names on every platform):
   {taken_at, system{cpu_percent,cpu_cores,ram_total_gb,ram_used_gb,ram_percent,uptime_hours,process_count,
    disks[{drive,total_gb,free_gb,percent_used}],battery{percent,plugged}|None},
-   apps[{name,processes,ram_mb,cpu_percent}], windows[{title,app,foreground,minimized}],
+   apps[{name,processes,ram_mb,cpu_percent}], windows[{title,app,foreground,minimized,hwnd}],
    startup[str], network{established,by_app[{app,connections}]}|None}
 """
 from __future__ import annotations
@@ -135,7 +135,7 @@ def _windows() -> list[dict]:
         if names[pid.value].lower() in _OWN_NAMES:
             return True
         found.append({"title": title[:140], "app": names[pid.value], "foreground": hwnd == fg,
-                      "minimized": bool(user32.IsIconic(hwnd))})
+                      "minimized": bool(user32.IsIconic(hwnd)), "hwnd": int(hwnd or 0)})
         return True
 
     user32.EnumWindows(cb, 0)

@@ -156,6 +156,7 @@ class PopupUI:
         self._ai_text: list[str] = []
         self._thinking = False
         self._chat_busy = False
+        self._action_n = 0
         self._placeholder_on = True
         self.window: tk.Toplevel | None = None
         self._lines: list[str] = []
@@ -257,6 +258,10 @@ class PopupUI:
                            spacing1=3)
         chat.tag_bind("chip", "<Enter>", lambda e: chat.config(cursor="hand2"))
         chat.tag_bind("chip", "<Leave>", lambda e: chat.config(cursor="arrow"))
+        chat.tag_configure("action", foreground=CREAM_50, background=MAROON_700, font=(FONT_TEXT, 10, "bold"),
+                           lmargin1=8, spacing1=4, spacing3=2)
+        chat.tag_bind("action", "<Enter>", lambda e: chat.config(cursor="hand2"))
+        chat.tag_bind("action", "<Leave>", lambda e: chat.config(cursor="arrow"))
         chat.tag_configure("copylink", font=(FONT_TEXT, 8, "bold"), foreground=MAROON_700)
         chat.tag_bind("copylink", "<Enter>", lambda e: chat.config(cursor="hand2"))
         chat.tag_bind("copylink", "<Leave>", lambda e: chat.config(cursor="arrow"))
@@ -813,7 +818,18 @@ class PopupUI:
         buf = ""
         first_line = True
 
+        from consiz import pc_actions, pc_mode
+        actions: list = []
+
         def emit(line: str) -> None:
+            if self.mode == "pc" and pc_actions.is_action_line(line):
+                # The AI may SUGGEST one-click actions; each becomes a button that runs only when clicked.
+                if len(actions) < pc_actions.MAX_ACTIONS:
+                    act = pc_actions.parse(line, pc_mode.last_windows())
+                    if act is not None:
+                        actions.append(act)
+                        _dispatch(self._add_action, act)
+                return
             _dispatch(self._append, _pretty_line(line))
 
         try:
@@ -842,11 +858,45 @@ class PopupUI:
         text = "".join(collected)
         if text.upper().lstrip("*`#_ ").startswith("KIND"):
             text = text.split("\n", 1)[1] if "\n" in text else ""
-        if not text.strip():
+        text = "\n".join(ln for ln in text.splitlines() if not pc_actions.is_action_line(ln))
+        if not text.strip() and not actions:
             _dispatch(self._append, "⚠ The AI sent an empty answer. Try asking again.")
             return
         self.history.append({"role": "user", "content": question})
-        self.history.append({"role": "assistant", "content": text.strip()})
+        self.history.append({"role": "assistant", "content": text.strip() or "(suggested an action)"})
+
+    def _add_action(self, action) -> None:
+        """A suggested one-click action as a button in the chat. It does nothing until clicked."""
+        self._action_n += 1
+        tag = f"act{self._action_n}"
+        self.chat.config(state="normal")
+        self.chat.insert("end", f"  ▶  {action.label}" + chr(10), ("action", tag))
+        self.chat.tag_bind(tag, "<Button-1>", lambda e, a=action, t=tag: self._run_action(a, t))
+        self.chat.config(state="disabled")
+        self._scroll_end()
+        self._fit_height()
+
+    def _run_action(self, action, tag: str) -> None:
+        self.chat.tag_unbind(tag, "<Button-1>")           # one click = one run
+        self._replace_tag_text(tag, f"  …  {action.label}", "ai_dim")
+
+        def work():
+            from consiz import pc_actions
+            ok, msg = pc_actions.run(action)
+            _dispatch(self._replace_tag_text, tag, f"  {'✓' if ok else '⚠'}  {action.label} — {msg}",
+                      "ai_dim" if ok else "warn")
+
+        threading.Thread(target=work, name="consiz-action", daemon=True).start()
+
+    def _replace_tag_text(self, tag: str, new_text: str, style: str) -> None:
+        rng = self.chat.tag_ranges(tag)
+        if not rng:
+            return
+        self.chat.config(state="normal")
+        start = rng[0]
+        self.chat.delete(rng[0], rng[1])
+        self.chat.insert(start, new_text + chr(10), (style, tag))
+        self.chat.config(state="disabled")
 
 
 def _friendly_error(detail: str) -> str:
