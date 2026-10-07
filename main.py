@@ -214,6 +214,15 @@ def main() -> int:
 
     if not acquire_single_instance_lock():
         output.notify("Consiz is already running in another window/process. Only one instance can listen for triggers.")
+        if sys.platform == "win32":   # the exe has no console: without this the click would look dead
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "Consiz is already running.\n\n"
+                "Look for its icon in the system tray (click the ^ arrow near the clock). "
+                "Right-click it for the menu.\n\n"
+                "To use it: select text, then press the middle mouse button.",
+                "Consiz", 0x40)
         return 1
 
     from consiz.trigger import Trigger
@@ -308,6 +317,7 @@ def main() -> int:
                 on_exit=lambda: os._exit(0),
                 on_sign_out=_sign_out if auth_on else None,
                 get_user_label=(lambda: "Signed in: " + _auth.display_name()) if auth_on else None,
+                welcome="Select any text, then press the middle mouse button.",
             )
             tray.start()
         except Exception as e:

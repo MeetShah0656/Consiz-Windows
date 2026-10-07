@@ -106,7 +106,9 @@ class SystemTray:
         on_exit: Optional[Callable[[], None]] = None,
         on_sign_out: Optional[Callable[[], None]] = None,
         get_user_label: Optional[Callable[[], str]] = None,
+        welcome: str = "",
     ) -> None:
+        self.welcome = welcome
         self.on_sign_out = on_sign_out
         self.get_user_label = get_user_label
         self.on_explain = on_explain
@@ -204,7 +206,15 @@ class SystemTray:
         self.icon = pystray.Icon("Consiz", image, "Consiz — AI Context & Dictation", menu)
         
         # Run detached in background thread
-        t = threading.Thread(target=self.icon.run, daemon=True, name="TrayThread")
+        def _ready(icon):
+            icon.visible = True
+            if self.welcome:
+                try:
+                    icon.notify(self.welcome, "Consiz is running")   # tells a first-time user where the app lives
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=lambda: self.icon.run(setup=_ready), daemon=True, name="TrayThread")
         t.start()
 
     def stop(self) -> None:
