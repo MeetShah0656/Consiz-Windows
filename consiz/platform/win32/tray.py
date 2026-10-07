@@ -106,11 +106,15 @@ class SystemTray:
         on_exit: Optional[Callable[[], None]] = None,
         on_sign_out: Optional[Callable[[], None]] = None,
         get_user_label: Optional[Callable[[], str]] = None,
+        is_signed_in: Optional[Callable[[], bool]] = None,
+        on_sign_in: Optional[Callable[[], None]] = None,
         welcome: str = "",
     ) -> None:
         self.welcome = welcome
         self.on_sign_out = on_sign_out
         self.get_user_label = get_user_label
+        self.is_signed_in = is_signed_in or (lambda: True)
+        self.on_sign_in = on_sign_in
         self.on_explain = on_explain
         self.on_dictate = on_dictate
         self.on_settings = on_settings
@@ -142,6 +146,10 @@ class SystemTray:
     def _sign_out(self, icon, item):
         if self.on_sign_out:
             self.on_sign_out()
+
+    def _sign_in(self, icon, item):
+        if self.on_sign_in:
+            self.on_sign_in()
 
     def _quit_app(self, icon, item):
         if self.icon:
@@ -196,7 +204,10 @@ class SystemTray:
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
             Menu.SEPARATOR,
             *([Item(lambda item: self.get_user_label(), None, enabled=False)] if self.get_user_label else []),
-            *([Item("Sign out", self._sign_out)] if self.on_sign_out else []),
+            *([Item("Sign in…", self._sign_in, visible=lambda item: not self.is_signed_in())]
+              if self.on_sign_in else []),
+            *([Item("Sign out", self._sign_out, visible=lambda item: self.is_signed_in())]
+              if self.on_sign_out else []),
             Item("Exit Consiz", self._quit_app),
         )
 

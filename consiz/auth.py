@@ -29,6 +29,27 @@ TIMEOUT_S = 20
 GOOGLE_WAIT_S = 180
 
 
+LOG_FILE = prefs.STORE.parent / "consiz.log"
+_attempt = {"n": 0}
+
+
+def log(msg: str) -> None:
+    """Append one line to ~/.consiz/consiz.log (no secrets). Helps debug the windowless exe."""
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > 200_000:
+            LOG_FILE.write_text("")
+        with LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + chr(10))
+    except OSError:
+        pass
+
+
+def cancel_pending() -> None:
+    """Stop any sign-in attempt still waiting for the browser (e.g. the user closed the window)."""
+    _attempt["n"] += 1
+
+
 class AuthError(Exception):
     """Friendly, user-showable auth failure. `rejected` = Google itself said no (vs. a network problem)."""
     rejected = False
@@ -238,13 +259,27 @@ def sign_in_google(open_browser=None) -> dict:
         "code_challenge": challenge, "code_challenge_method": "S256",
         "access_type": "offline", "prompt": "select_account consent",
     })
-    (open_browser or webbrowser.open)(url)
+    _attempt["n"] += 1
+    mine = _attempt["n"]
+    opened = (open_browser or webbrowser.open)(url)
+    log(f"google sign-in: browser open returned {opened!r}, listening on port {server.server_port}")
+    if not opened:
+        # No default browser handler: let the user finish by hand instead of failing silently.
+        try:
+            import subprocess
+            subprocess.run(["clip"], input=url.encode("utf-16le"), check=False, timeout=5)
+        except Exception:
+            pass
+        server.server_close()
+        raise AuthError("Couldn't open your browser. The sign-in link was copied: paste it into a browser.")
     deadline = time.time() + GOOGLE_WAIT_S
     try:
-        while not got and time.time() < deadline:
+        while not got and time.time() < deadline and _attempt["n"] == mine:
             server.handle_request()
     finally:
         server.server_close()
+    if _attempt["n"] != mine and not got:
+        raise AuthError("Sign-in was cancelled.")
     if got.get("error"):
         raise AuthError("Google sign-in was cancelled." if got["error"] == "access_denied" else got["error"])
     if not got.get("code"):

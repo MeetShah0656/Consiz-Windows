@@ -284,6 +284,11 @@ def main() -> int:
             _dispatch(_login_needed)
         threading.Thread(target=_check, daemon=True).start()
 
+    def _dispatch_login() -> None:
+        from consiz.platform.win32.popup import _dispatch
+        from consiz.platform.win32.login import open_login
+        _dispatch(open_login)
+
     def _sign_out() -> None:
         from consiz import auth
         from consiz.platform.win32.popup import _dispatch
@@ -316,7 +321,10 @@ def main() -> int:
                 on_settings=_open_settings,
                 on_exit=lambda: os._exit(0),
                 on_sign_out=_sign_out if auth_on else None,
-                get_user_label=(lambda: "Signed in: " + _auth.display_name()) if auth_on else None,
+                get_user_label=(lambda: ("Signed in: " + _auth.display_name()) if _auth.signed_in()
+                                else "Not signed in") if auth_on else None,
+                is_signed_in=_auth.signed_in if auth_on else None,
+                on_sign_in=(lambda: _dispatch_login()) if auth_on else None,
                 welcome="Select any text, then press the middle mouse button.",
             )
             tray.start()

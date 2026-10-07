@@ -70,9 +70,12 @@ class LoginUI:
             _dispatch(self._success)
 
         def err(msg):
+            if msg == "Sign-in was cancelled.":     # an older attempt being replaced; the new one owns the UI
+                return
             _dispatch(self._set_busy, False)
             _dispatch(self._say, msg, False, True)
 
+        auth.log("login window: Continue with Google clicked")
         auth.run_async(auth.sign_in_google, ok, err)
 
     def _success(self) -> None:
@@ -85,6 +88,11 @@ class LoginUI:
     def show(self, on_done=None) -> None:
         if self.window is None:
             self._build()
+        else:
+            auth.cancel_pending()          # an old attempt may still be waiting for a browser that was closed
+            self._set_busy(False)
+            self._say("")
+        auth.log("login window shown")
         self._on_done = on_done
         self.window.deiconify()
         self.window.lift()
