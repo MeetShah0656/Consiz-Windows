@@ -134,6 +134,21 @@ TEXT_TOO_THIN = 250                   # fewer readable characters than this = "t
 MAX_PER_WINDOW = 6000
 MAX_TOTAL = 12000
 _allowed: set[int] = set()            # windows the user approved during this run of the app
+READ_CACHE_SECONDS = 300              # follow-ups about the same window reuse what was just read
+_read_cache: dict[tuple[int, str], tuple[str, str | None, float]] = {}   # (hwnd, title) -> (text, picture, when)
+
+
+def _cache_get(w: dict):
+    hit = _read_cache.get((w["hwnd"], w["title"]))
+    if hit and time.time() - hit[2] < READ_CACHE_SECONDS:
+        return hit[0], hit[1]
+    return None
+
+
+def _cache_put(w: dict, text: str, pic: str | None) -> None:
+    if len(_read_cache) > 20:
+        _read_cache.clear()
+    _read_cache[(w["hwnd"], w["title"])] = (text, pic, time.time())
 
 
 def sensitive_reason(win: dict) -> str | None:
@@ -186,6 +201,19 @@ def gather_contents(indices: list[int], windows: list[dict], read_text, confirm,
 
     parts, used, images = [], 0, []
     for i, w in ok:
+        cached = _cache_get(w)
+        if cached is not None:
+            text, pic = cached
+            notify(f"Using what I read earlier: {w['title'][:40]}")
+            if pic and len(images) < MAX_IMAGES:
+                images.append(pic)
+                parts.append(f"[{i}] {w['app']}: {w['title']}\n(A PICTURE of the window is attached as image "
+                             f"{len(images)}. Read the text from the picture.)")
+                continue
+            if len(text.strip()) >= TEXT_TOO_THIN:
+                used += len(text)
+                parts.append(f"[{i}] {w['app']}: {w['title']}\n{text}")
+                continue
         notify(f"Reading: {w['title'][:50]}")
         try:
             text, method = read_text(w["hwnd"])
@@ -195,6 +223,11 @@ def gather_contents(indices: list[int], windows: list[dict], read_text, confirm,
         text = text[:MAX_PER_WINDOW]
         text = text[:max(0, MAX_TOTAL - used)]
         used += len(text)
+        if len(text.strip()) < TEXT_TOO_THIN and w.get("minimized"):
+            # A minimized window cannot be photographed: offer the Switch button instead of failing silently.
+            parts.append(f"[{i}] {w['app']}: {w['title']}\n(This window is MINIMIZED, so I cannot see it. Tell the "
+                         f"user to switch to it and ask again; end your answer with the line: ACTION: focus_window {i})")
+            continue
         if len(text.strip()) < TEXT_TOO_THIN and capture_image is not None and len(images) < MAX_IMAGES:
             notify(f"Taking a picture of: {w['title'][:45]}")
             try:
@@ -203,6 +236,7 @@ def gather_contents(indices: list[int], windows: list[dict], read_text, confirm,
                 pic = None
             if pic:
                 images.append(pic)
+                _cache_put(w, text, pic)
                 parts.append(f"[{i}] {w['app']}: {w['title']}\n(This app does not share its text, so a PICTURE of "
                              f"the window is attached as image {len(images)}. Read the text from the picture.)")
                 continue
@@ -213,13 +247,27 @@ def gather_contents(indices: list[int], windows: list[dict], read_text, confirm,
                      "middle mouse button.)")
         if not text.strip():
             text = "(nothing readable — this app does not share its text with other programs)"
+        elif len(text.strip()) >= TEXT_TOO_THIN:
+            _cache_put(w, text, None)
         parts.append(f"[{i}] {w['app']}: {w['title']}\n{text}")
     return "\n\n".join(notes + parts), images, False
 
 
+_LEAK_RE = re.compile(r"(?i)\bREAD\s*:\s*\d")
+
+
 def stream_answer(question: str, history: list[dict], snapshot_text: str, windows: list[dict], *,
                   stream_fn, read_text, confirm, notify, capture_image=None):
-    """Yield the answer text. Handles the READ round-trip; everything else streams straight through."""
+    """Yield the answer text. Handles the READ round-trip; everything else streams straight through.
+    Any line that still mentions the internal 'READ: n' protocol is removed — users never see it."""
+    yield from _clean_stream(
+        _stream_answer_raw(question, history, snapshot_text, windows, stream_fn=stream_fn, read_text=read_text,
+                           confirm=confirm, notify=notify, capture_image=capture_image),
+        lambda ln: bool(_LEAK_RE.search(ln)))
+
+
+def _stream_answer_raw(question: str, history: list[dict], snapshot_text: str, windows: list[dict], *,
+                       stream_fn, read_text, confirm, notify, capture_image=None):
     from . import llm
     pieces = stream_fn(llm.pc_messages(snapshot_text, history, question))
     buf, decided = "", False

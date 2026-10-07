@@ -193,6 +193,9 @@ _PC_SYSTEM = (
     "- You cannot change anything on the PC yourself. Never suggest ending System, svchost, csrss, winlogon "
     "or explorer.\n"
     "- Lead with the answer, then the most useful 2-4 supporting facts.\n"
+    "- If the user asks you to tell, send, share or write to someone (for example 'tell Hitarth'), write the "
+    "ready-to-send message under a line 'Draft:' using facts from the earlier answers in this chat. You cannot "
+    "send it; say the user can copy it. Do not describe unrelated windows.\n"
 )
 _PC_READ_RULE = (
     "- You see window TITLES only. If answering needs what is INSIDE a window (its text, a document, a page, "

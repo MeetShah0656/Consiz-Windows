@@ -142,6 +142,7 @@ def test_process_dictation_multilingual_badge():
 
 
 def test_whisper_transcribe_silence():
+    pytest.importorskip("faster_whisper")        # optional voice package; skipped (not failed) when absent
     # Test faster-whisper with tiny.en model on synthetic silent audio array
     engine = DictationEngine(model_size="tiny.en", device="cpu", compute_type="int8")
     # 0.5 seconds of 16kHz silence

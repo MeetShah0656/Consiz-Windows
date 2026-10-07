@@ -15,8 +15,10 @@ WINS = [
 @pytest.fixture(autouse=True)
 def fresh_session():
     pc_mode._allowed.clear()
+    pc_mode._read_cache.clear()
     yield
     pc_mode._allowed.clear()
+    pc_mode._read_cache.clear()
 
 
 # ------------------------------------------------------------------ READ protocol + blocklist
@@ -163,6 +165,7 @@ def test_pictures_are_capped_and_a_failed_capture_falls_back_to_text_hint():
                                             lambda m: None, capture_image=lambda h: "AAAA")
     assert len(images) == pc_mode.MAX_IMAGES
     pc_mode._allowed.clear()
+    pc_mode._read_cache.clear()
     block, images, _ = pc_mode.gather_contents([1], wins, lambda h: ("", "none"), lambda t: True,
                                                lambda m: None, capture_image=lambda h: None)
     assert images == [] and "chrome://accessibility" in block
@@ -230,3 +233,41 @@ def test_capture_helper_returns_a_real_jpeg_of_a_window():
 def test_prompt_forbids_the_cant_see_inside_answer():
     first = llm.pc_messages("S", [], "q")[0]["content"]
     assert "NEVER tell the user that you only see titles" in first
+
+
+# ------------------------------------------------------------------ production fixes: leak, minimized, cache, draft
+def test_internal_read_line_is_never_shown_to_the_user():
+    seen = []
+    fn = _stream_fn(["- Exa page, window 4.\n- Window 4 is minimized, use READ: 4 to see inside\n- Spent 18 dollars.\n"], seen)
+    out = "".join(pc_mode.stream_answer("what is on the exa page?", [], "SNAP", WINS, stream_fn=fn,
+                                       read_text=lambda h: ("", "none"), confirm=lambda t: True,
+                                       notify=lambda m: None))
+    assert "READ" not in out and "Spent 18 dollars" in out and "Exa page" in out
+
+
+def test_minimized_window_is_not_photographed_and_gets_a_switch_hint():
+    shots = []
+    wins = [dict(WINS[1], minimized=True)]
+    block, images, _ = pc_mode.gather_contents([1], wins, lambda h: ("", "none"), lambda t: True,
+                                               lambda m: None, capture_image=lambda h: shots.append(h) or "AAAA")
+    assert shots == [] and images == [] and "MINIMIZED" in block and "ACTION: focus_window 1" in block
+
+
+def test_second_question_about_the_same_window_reuses_the_read():
+    reads, shots = [], []
+    read = lambda h: reads.append(h) or ("Total 5000 " + "x" * 400, "tree")        # noqa: E731
+    pc_mode.gather_contents([1], WINS, read, lambda t: True, lambda m: None)
+    block, _i, _d = pc_mode.gather_contents([1], WINS, read, lambda t: pytest.fail("no second prompt"),
+                                            lambda m: None)
+    assert reads == [101] and "Total 5000" in block                              # read once, used twice
+    wins = [dict(WINS[1])]
+    cap = lambda h: shots.append(h) or "PIC"                                     # noqa: E731
+    pc_mode.gather_contents([1], wins, lambda h: ("", "none"), lambda t: True, lambda m: None, capture_image=cap)
+    _b, images, _d = pc_mode.gather_contents([1], wins, lambda h: ("", "none"), lambda t: True,
+                                             lambda m: None, capture_image=cap)
+    assert shots == [102] and images == ["PIC"]                                  # photographed once, reused
+
+
+def test_prompt_handles_tell_someone_requests():
+    first = llm.pc_messages("S", [], "q")[0]["content"]
+    assert "Draft:" in first and "tell Hitarth" in first and "cannot send it" in first

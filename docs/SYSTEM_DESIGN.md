@@ -140,17 +140,17 @@ One table: `usage(sub TEXT, email TEXT, day TEXT, n INTEGER, PRIMARY KEY(sub, da
 - **DB:** Neon Postgres (free, no expiry). SQLite fallback only for local runs.
 - **Client:** `python build_exe.py` → `dist/Consiz/Consiz.exe` (onedir, ~1 s start). Bakes `CONSIZ_SERVER_URL`, `GOOGLE_CLIENT_ID/SECRET` (public client values); never the AI key. Startup shortcut points at the built exe.
 - **Observability:** `/health`; client log `~/.consiz/consiz.log`; Render logs. No analytics yet.
-- **Release gate:** `python -m pytest tests -q` (113 tests; the 2 microphone/whisper failures need `faster-whisper`) + manual checklist.
+- **Release gate:** `python -m pytest tests -q` (117 tests: 115 pass, 2 skip when the optional voice packages are absent) and `python scripts/release_check.py` — see `RELEASE_READINESS.md`.
 
 ## 11. Quality, limits and known gaps (continue the KI list)
 
 | ID | Gap | Impact / plan |
 |---|---|---|
 | KI-18 | Chrome/Brave/Edge/Electron hide page text from UI Automation | picture fallback built; text route needs the user to enable accessibility |
-| KI-19 | Minimized windows cannot be photographed | offer a "Switch to it" button then retry |
-| KI-20 | Chat history keeps only answer text, not the window text/picture read earlier | follow-ups re-READ; consider caching the block for the session |
-| KI-21 | No "draft a message / tell X" intent in PC mode | add draft-from-previous-answer + copy; never auto-send |
-| KI-22 | Model may echo the internal `READ: n` line in a normal answer | filter it from displayed text |
+| KI-19 | Minimized windows cannot be photographed | **fixed 2026-10-07**: AI is told to end with `ACTION: focus_window n` → "Switch to" button, then ask again |
+| KI-20 | Chat history keeps only answer text, not the window text/picture read earlier | **fixed 2026-10-07**: reads and pictures cached 5 min per window, so follow-ups do not re-read or re-photograph |
+| KI-21 | No "draft a message / tell X" intent in PC mode | **fixed 2026-10-07**: prompt writes a ready-to-send `Draft:`; user copies it; nothing is sent |
+| KI-22 | Model may echo the internal `READ: n` line in a normal answer | **fixed 2026-10-07**: any line mentioning `READ: <n>` is stripped before display |
 | KI-23 | Free text/vision models are rate-limited or overloaded | retries + fallbacks exist; paid routing is the real fix (§12) |
 | KI-24 | Render free sleeps; first answer slow | wake ping + long timeout; paid always-on plan removes it |
 | KI-25 | PC mode and chat UI are Windows-only; macOS lacks them | port `sysinfo` + popup chat; shared modules already portable |

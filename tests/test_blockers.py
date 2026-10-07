@@ -28,7 +28,7 @@ def test_w05_w06_recorder_stop_no_deadlock_and_single_autostop():
 
 def test_w09_microphone_detection_validation(monkeypatch):
     """Verify that start() raises RuntimeError if no audio input channels exist (W-09)."""
-    import sounddevice as sd
+    sd = pytest.importorskip("sounddevice")      # optional voice package; skipped (not failed) when absent
 
     monkeypatch.setattr(sd, "query_devices", lambda: [{"name": "Speakers", "max_input_channels": 0, "max_output_channels": 2}])
 
