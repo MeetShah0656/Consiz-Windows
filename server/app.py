@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 import requests
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from google.auth.transport import requests as g_requests
 from google.oauth2 import id_token as g_id_token
 
@@ -203,6 +203,16 @@ def home():
         "limit per person and prevent abuse. We request only your basic profile (name and email address). "
         "We do not access your Gmail, Drive, contacts, calendar or any other Google data.</p>"
         '<p>Read our <a href="/privacy">Privacy Policy</a>.</p>'))
+
+
+@app.get("/{filename}", response_class=PlainTextResponse, include_in_schema=False)
+def search_console_file(filename: str):
+    """Google Search Console 'HTML file' ownership check. Serves ONLY the one file name we configured
+    (GOOGLE_VERIFY_FILE), never an arbitrary googleXXXX.html — otherwise anyone could claim this site."""
+    expected = _cfg("GOOGLE_VERIFY_FILE", "google4a2c47af0ffeb6d0.html")
+    if expected and filename == expected:
+        return f"google-site-verification: {expected}"
+    raise HTTPException(404, "Not found")
 
 
 @app.get("/privacy", response_class=HTMLResponse)

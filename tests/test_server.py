@@ -57,6 +57,13 @@ def test_public_pages_for_google_consent_screen(client):
     assert "Limited Use" in priv.text
 
 
+def test_search_console_file_only_the_configured_name(client):
+    ok = client.get("/google4a2c47af0ffeb6d0.html")
+    assert ok.status_code == 200 and ok.text == "google-site-verification: google4a2c47af0ffeb6d0.html"
+    assert client.get("/google0000000000000000.html").status_code == 404
+    assert client.get("/random.html").status_code == 404
+
+
 def test_requires_sign_in(client):
     assert client.post("/v1/chat/completions", json=BODY).status_code == 401
 
