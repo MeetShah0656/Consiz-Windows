@@ -117,3 +117,37 @@ def test_ip_limit(client, monkeypatch):
     h = dict(GOOD, **{"X-Forwarded-For": "1.2.3.4"})
     assert client.post("/v1/chat/completions", json=BODY, headers=h).status_code == 200
     assert client.post("/v1/chat/completions", json=BODY, headers=h).status_code == 429
+
+
+# ------------------------------------------------------------------ pictures of windows (vision requests)
+PIC = "data:image/jpeg;base64,QUJD"
+
+
+def _pic_body(url=PIC, role="user", n=1):
+    parts = [{"type": "text", "text": "what does it say?"}] + [{"type": "image_url", "image_url": {"url": url}}] * n
+    return {"messages": [{"role": role, "content": parts}]}
+
+
+def test_picture_request_uses_the_vision_model(client):
+    r = client.post("/v1/chat/completions", json=_pic_body(), headers=GOOD)
+    assert r.status_code == 200
+    p = client.sent["payload"]
+    assert "gemma" in p["model"] and p["models"][0] == p["model"]
+    assert isinstance(p["messages"][0]["content"], list)
+
+
+def test_text_request_still_uses_the_text_model(client):
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert "gemma" not in client.sent["payload"]["model"]
+
+
+@pytest.mark.parametrize("body,code", [
+    (_pic_body(url="https://evil.example/x.jpg"), 400),            # only inline data, never a remote URL
+    (_pic_body(url="data:text/html;base64,QUJD"), 400),
+    (_pic_body(role="assistant"), 400),                            # pictures only from the user
+    (_pic_body(role="system"), 400),
+    (_pic_body(n=3), 400),                                         # at most 2 pictures
+    (_pic_body(url="data:image/jpeg;base64," + "A" * 2_000_000), 413),
+])
+def test_picture_rules(client, body, code):
+    assert client.post("/v1/chat/completions", json=body, headers=GOOD).status_code == code

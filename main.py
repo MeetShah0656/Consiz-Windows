@@ -165,13 +165,20 @@ def _read_window(hwnd: int) -> tuple[str, str]:
     return read_window_text(hwnd)
 
 
+def _capture_window_image(hwnd: int):
+    from consiz.platform.win32.readwin import capture_window_jpeg_b64
+    return capture_window_jpeg_b64(hwnd)
+
+
 def _confirm_window_read(titles: list[str]) -> bool:
     """Layer 3 permission: name the exact windows before any text inside them is read or sent."""
     import ctypes
     nl = chr(10)
     msg = ("Consiz wants to read the text inside:" + nl + nl + nl.join("  - " + t[:90] for t in titles) + nl + nl
            + "This text (passwords and keys removed) is sent to the AI to answer your question. "
-           "Nothing is changed or sent anywhere else." + nl + nl + "Allow for this session?")
+           "If an app (like a browser) does not share its text, a PICTURE of that window is sent instead "
+           "- a picture cannot have secrets removed, so say No if anything private is on that window."
+           + nl + nl + "Nothing is changed or sent anywhere else. Allow for this session?")
     return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - read window text", 0x24) == 6
 
 
@@ -318,7 +325,7 @@ def main() -> int:
             stream = pc_mode.stream_answer(
                 question, list(POPUP.history), text, pc_mode.last_windows(),
                 stream_fn=llm.stream_messages, read_text=_read_window, confirm=_confirm_window_read,
-                notify=lambda m: _dispatch(POPUP._set_meta, m))
+                notify=lambda m: _dispatch(POPUP._set_meta, m), capture_image=_capture_window_image)
             POPUP.show_followup(question, stream)
             return
         msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question)

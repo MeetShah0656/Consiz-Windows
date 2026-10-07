@@ -8,7 +8,8 @@ Run:  pip install -r server/requirements.txt
 Env (required): OPENROUTER_API_KEY, GOOGLE_CLIENT_ID (same desktop client the app uses)
 Env (optional): OPENROUTER_MODEL, OPENROUTER_FALLBACKS, MAX_OUTPUT_TOKENS (5000), ALLOWED_EMAILS (comma list),
   DAILY_LIMIT (50 answers per user/day), IP_DAILY_LIMIT (300 per IP/day), RATE_PER_MIN (12 per user),
-  MAX_INPUT_CHARS (40000), MAX_MESSAGES (30),
+  MAX_INPUT_CHARS (40000), MAX_MESSAGES (30), MAX_IMAGES (2 pictures of windows per request),
+  VISION_MODEL / VISION_FALLBACKS (image-reading models used when a request has pictures),
   DATABASE_URL  -> Postgres (e.g. a free Neon/Render database) so counts survive restarts.
                    Without it counts live in a local SQLite file (wiped when a free host restarts).
 """
@@ -134,16 +135,47 @@ def _clean_messages(messages) -> list[dict]:
     """Only plain role/content text, bounded in count and size (a custom client can't run up the bill)."""
     if not isinstance(messages, list) or not messages or len(messages) > int(_cfg("MAX_MESSAGES", "30")):
         raise HTTPException(400, "Bad request.")
-    out, total = [], 0
+    out, total, images = [], 0, 0
+    max_images = int(_cfg("MAX_IMAGES", "2"))
+    max_image_chars = int(_cfg("MAX_IMAGE_CHARS", "1800000"))        # base64 length per picture (~1.3 MB)
     for m in messages:
-        if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant") \
-                or not isinstance(m.get("content"), str):
+        if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant"):
             raise HTTPException(400, "Bad request.")
-        total += len(m["content"])
-        out.append({"role": m["role"], "content": m["content"]})
+        c = m.get("content")
+        if isinstance(c, str):
+            total += len(c)
+            out.append({"role": m["role"], "content": c})
+            continue
+        # Pictures of windows: only in a USER message, only inline JPEG/PNG data, bounded in number and size.
+        if m["role"] != "user" or not isinstance(c, list) or not c or len(c) > max_images + 1:
+            raise HTTPException(400, "Bad request.")
+        parts = []
+        for part in c:
+            kind = part.get("type") if isinstance(part, dict) else None
+            if kind == "text" and isinstance(part.get("text"), str):
+                total += len(part["text"])
+                parts.append({"type": "text", "text": part["text"]})
+            elif kind == "image_url" and isinstance(part.get("image_url"), dict):
+                url = part["image_url"].get("url")
+                if not isinstance(url, str) or not url.startswith(("data:image/jpeg;base64,", "data:image/png;base64,")) \
+                        or len(url) > max_image_chars:
+                    raise HTTPException(413 if isinstance(url, str) and len(url) > max_image_chars else 400,
+                                        "That picture is not allowed or is too big.")
+                images += 1
+                if images > max_images:
+                    raise HTTPException(400, "Too many pictures.")
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+            else:
+                raise HTTPException(400, "Bad request.")
+        out.append({"role": "user", "content": parts})
     if total > int(_cfg("MAX_INPUT_CHARS", "40000")):
         raise HTTPException(413, "That is too long. Select less text.")
     return out
+
+
+def _has_images(messages: list[dict]) -> bool:
+    return any(isinstance(m["content"], list) and any(p["type"] == "image_url" for p in m["content"])
+               for m in messages)
 
 
 def _num(value, default, lo, hi):
@@ -224,7 +256,9 @@ def privacy():
         "removed first. It is used only to answer that question and is not stored by us.</li>"
         "<li><b>Reading inside a window (optional, asked every time):</b> if your question needs it, Consiz names "
         "the exact window and asks permission first. Only if you allow, the visible text of that window is read on "
-        "your computer, passwords and keys are removed, and it is sent with your question to answer it. Password "
+        "your computer, passwords and keys are removed, and it is sent with your question to answer it. If the app "
+        "does not share its text (for example a web browser), a picture of that one window is sent instead; a "
+        "picture cannot have secrets removed, so you are told this in the permission box. Password "
         "managers and private or banking windows are never read. It is not stored by us.</li>"
         "<li><b>One-click suggestions:</b> Consiz may suggest a button (for example &quot;Open Storage settings&quot;). "
         "Nothing happens unless you click it, and it only opens a Windows screen or program.</li></ul>"
@@ -287,9 +321,15 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
     fallbacks = [m.strip() for m in _cfg(
         "OPENROUTER_FALLBACKS",
         "inclusionai/ling-3.0-flash-sante:free,nvidia/nemotron-3-ultra-550b-a55b:free").split(",") if m.strip()]
+    models = [model, *fallbacks][:3]
+    if _has_images(messages):                       # the server decides from the content, not from a client flag
+        vision = _cfg("VISION_MODEL", "google/gemma-4-31b-it:free")
+        vfall = [m.strip() for m in _cfg("VISION_FALLBACKS", "google/gemma-4-26b-a4b-it:free,"
+                                         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free").split(",") if m.strip()]
+        models = [vision, *vfall][:3]
     payload = {
-        "model": model,
-        "models": [model, *fallbacks][:3],
+        "model": models[0],
+        "models": models,
         "messages": messages,
         "temperature": _num(body.get("temperature"), 0.2, 0.0, 1.0),
         "max_tokens": _num(body.get("max_tokens"), 2500, 1, cap),

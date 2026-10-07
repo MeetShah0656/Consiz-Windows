@@ -65,7 +65,7 @@ def render(snap: dict) -> tuple[str, str]:
     if hl:
         lines += ["", "HIGHLIGHTS (worked out by code)"] + [f"- {h}" for h in hl]
 
-    lines += ["", "OPEN WINDOWS (title only; contents are not visible)"]
+    lines += ["", "OPEN WINDOWS (only titles are listed here; you CAN look inside any window by replying READ: <number>)"]
     wins = snap["windows"][:30]
     for n, w in enumerate(wins, 1):
         flag = " [FOCUSED]" if w["foreground"] else (" [minimized]" if w["minimized"] else "")
@@ -129,6 +129,8 @@ SENSITIVE_TITLE = re.compile(r"(?i)password|passcode|incognito|inprivate|private
 BROWSERS = {"chrome.exe", "brave.exe", "msedge.exe", "firefox.exe", "opera.exe", "vivaldi.exe"}
 READ_RE = re.compile(r"^\W*READ\s*:\s*([\d,\s]+)", re.IGNORECASE)
 MAX_READ_WINDOWS = 3
+MAX_IMAGES = 2                        # pictures of windows per question (apps that do not share their text)
+TEXT_TOO_THIN = 250                   # fewer readable characters than this = "this app is hiding its text"
 MAX_PER_WINDOW = 6000
 MAX_TOTAL = 12000
 _allowed: set[int] = set()            # windows the user approved during this run of the app
@@ -168,18 +170,21 @@ def _clean_stream(pieces, drop):
         yield buf
 
 
-def gather_contents(indices: list[int], windows: list[dict], read_text, confirm, notify) -> tuple[str, bool]:
-    """(contents block for the model, declined). Asks `confirm(titles)` once for windows not yet approved."""
+def gather_contents(indices: list[int], windows: list[dict], read_text, confirm, notify,
+                    capture_image=None) -> tuple[str, list[str], bool]:
+    """(contents block for the model, pictures [base64 JPEG], declined).
+    Asks `confirm(titles)` once for windows not yet approved. If an app shares almost no text (browsers, many
+    Electron apps), a picture of that one window is taken instead (`capture_image`), at most MAX_IMAGES."""
     wins = [(i, windows[i - 1]) for i in indices]
     blocked = [(i, w, sensitive_reason(w)) for i, w in wins]
     ok = [(i, w) for i, w, why in blocked if not why]
     notes = [f"[{i}] {w['app']}: NOT READ — {why}." for i, w, why in blocked if why]
     new = [w for _, w in ok if w["hwnd"] not in _allowed]
     if new and not confirm([f"{w['app']}: {w['title']}" for w in new]):
-        return "", True
+        return "", [], True
     _allowed.update(w["hwnd"] for _, w in ok)
 
-    parts, used = [], 0
+    parts, used, images = [], 0, []
     for i, w in ok:
         notify(f"Reading: {w['title'][:50]}")
         try:
@@ -190,18 +195,30 @@ def gather_contents(indices: list[int], windows: list[dict], read_text, confirm,
         text = text[:MAX_PER_WINDOW]
         text = text[:max(0, MAX_TOTAL - used)]
         used += len(text)
-        if w["app"].lower() in BROWSERS and len(text) < 250:
+        if len(text.strip()) < TEXT_TOO_THIN and capture_image is not None and len(images) < MAX_IMAGES:
+            notify(f"Taking a picture of: {w['title'][:45]}")
+            try:
+                pic = capture_image(w["hwnd"])
+            except Exception:
+                pic = None
+            if pic:
+                images.append(pic)
+                parts.append(f"[{i}] {w['app']}: {w['title']}\n(This app does not share its text, so a PICTURE of "
+                             f"the window is attached as image {len(images)}. Read the text from the picture.)")
+                continue
+        if w["app"].lower() in BROWSERS and len(text) < TEXT_TOO_THIN:
             text += ("\n(Only the browser's own controls were readable. Browsers hide page text from other apps "
                      "unless accessibility is on: open chrome://accessibility (or edge://, brave://) and turn on "
-                     "'Native accessibility API support', then ask again.)")
+                     "'Native accessibility API support', then ask again. Or select the text and press the "
+                     "middle mouse button.)")
         if not text.strip():
             text = "(nothing readable — this app does not share its text with other programs)"
         parts.append(f"[{i}] {w['app']}: {w['title']}\n{text}")
-    return "\n\n".join(notes + parts), False
+    return "\n\n".join(notes + parts), images, False
 
 
 def stream_answer(question: str, history: list[dict], snapshot_text: str, windows: list[dict], *,
-                  stream_fn, read_text, confirm, notify):
+                  stream_fn, read_text, confirm, notify, capture_image=None):
     """Yield the answer text. Handles the READ round-trip; everything else streams straight through."""
     from . import llm
     pieces = stream_fn(llm.pc_messages(snapshot_text, history, question))
@@ -223,9 +240,9 @@ def stream_answer(question: str, history: list[dict], snapshot_text: str, window
     indices = parse_read(buf.lstrip().split("\n", 1)[0], len(windows))
     if not indices:
         return
-    block, declined = gather_contents(indices, windows, read_text, confirm, notify)
+    block, images, declined = gather_contents(indices, windows, read_text, confirm, notify, capture_image)
     if declined:
         yield "- You chose not to let me read that window, so I can't answer from what is inside it.\n"
         return
-    msgs = llm.pc_messages(snapshot_text, history, question, contents=block)
+    msgs = llm.pc_messages(snapshot_text, history, question, contents=block, images=images)
     yield from _clean_stream(stream_fn(msgs), lambda ln: bool(READ_RE.match(ln.strip())))

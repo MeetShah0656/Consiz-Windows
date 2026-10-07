@@ -110,6 +110,8 @@ class Config:
     provider: str = "openrouter"        # "openrouter" (default, cloud, free model) or "ollama" (local)
     openrouter_model: str = os.environ.get("OPENROUTER_MODEL", "inclusionai/ling-3.0-flash-fin:free")   # set in .env — same model as macOS
     openrouter_fallbacks: tuple = ("inclusionai/ling-3.0-flash-sante:free", "nvidia/nemotron-3-ultra-550b-a55b:free")   # OpenRouter allows max 3 models total
+    vision_model: str = os.environ.get("CONSIZ_VISION_MODEL", "google/gemma-4-31b-it:free")   # reads window pictures
+    vision_fallbacks: tuple = ("google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
     ollama_model: str = os.environ.get("CONSIZ_OLLAMA_MODEL", "gemma4:e4b")    # only used with --provider ollama
     ollama_host: str = os.environ.get("CONSIZ_OLLAMA_HOST", "http://localhost:11434")
     ollama_timeout_s: float = float(os.environ.get("CONSIZ_OLLAMA_TIMEOUT", "180.0"))   # local models may need longer warmup

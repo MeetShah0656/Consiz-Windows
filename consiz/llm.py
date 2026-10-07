@@ -198,10 +198,14 @@ _PC_READ_RULE = (
     "- You see window TITLES only. If answering needs what is INSIDE a window (its text, a document, a page, "
     "a spreadsheet), reply with ONLY one line: READ: <numbers>  (window numbers from OPEN WINDOWS, at most 3, "
     "e.g. READ: 2, 5). Nothing else in that reply. Do not guess what a window contains.\n"
+    "- NEVER tell the user that you only see titles or cannot see inside a window: you CAN, by replying READ. "
+    "Any question about what is written, shown or happening inside a window (a page, chat, document, message, "
+    "download, number, name) must get a READ reply naming the window number that matches it.\n"
 )
 _PC_NO_READ_RULE = (
     "- The text inside the chosen windows is provided in <window_contents>. Answer from it. Do NOT reply with READ. "
-    "If a window had nothing readable, say so and give any hint written there.\n"
+    "If a window had nothing readable, say so and give any hint written there. If pictures of windows are "
+    "attached, read the words in the pictures and answer from them.\n"
 )
 _PC_ACTION_RULE = (
     "- If ONE click would genuinely help the user, you may end your answer with up to 2 lines, each exactly: "
@@ -210,7 +214,8 @@ _PC_ACTION_RULE = (
 )
 
 
-def pc_messages(snapshot_text: str, history: list[dict], question: str, contents: str = "") -> list[dict]:
+def pc_messages(snapshot_text: str, history: list[dict], question: str, contents: str = "",
+                images: list[str] | None = None) -> list[dict]:
     """Ask-about-my-PC: system rules + earlier turns + the question with the CURRENT snapshot attached.
     `contents` (text read from windows the user allowed) switches the model from 'may ask to READ' to 'answer now'.
     Older turns keep only their text (not old snapshots) so long chats stay small."""
@@ -223,8 +228,19 @@ def pc_messages(snapshot_text: str, history: list[dict], question: str, contents
         user += "<window_contents>\n" + contents + "\n</window_contents>\n\n"
     msgs = [{"role": "system", "content": system}]
     msgs.extend(history[-12:])
-    msgs.append({"role": "user", "content": user + "Question: " + question})
+    text = user + "Question: " + question
+    if images:                                    # pictures of windows: OpenAI-style content parts
+        parts = [{"type": "text", "text": text}]
+        parts += [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}} for b64 in images]
+        msgs.append({"role": "user", "content": parts})
+    else:
+        msgs.append({"role": "user", "content": text})
     return msgs
+
+
+def has_images(messages: list[dict]) -> bool:
+    return any(isinstance(m.get("content"), list) and any(p.get("type") == "image_url" for p in m["content"])
+               for m in messages)
 
 
 def dictate_messages(content: str, instruction: str, language_name: str = "English") -> list[dict]:
@@ -280,9 +296,11 @@ def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> I
         "HTTP-Referer": "https://asconciz.local",   # optional OpenRouter attribution headers
         "X-Title": "As Conciz",
     }
+    models = ([CONFIG.vision_model, *CONFIG.vision_fallbacks] if has_images(messages)
+              else [CONFIG.openrouter_model, *CONFIG.openrouter_fallbacks])    # pictures need an image-reading model
     body = {
-        "model": CONFIG.openrouter_model,
-        "models": [CONFIG.openrouter_model, *CONFIG.openrouter_fallbacks],   # OpenRouter tries these in order if one is down/limited
+        "model": models[0],
+        "models": models,   # OpenRouter tries these in order if one is down/limited
         "messages": messages,
         "temperature": CONFIG.temperature,
         "max_tokens": max_tokens,
@@ -460,9 +478,22 @@ def stream(task: str, content: str, hint: str = "") -> Iterator[str]:
     return _guard(src)
 
 
+def _text_only(messages: list[dict]) -> list[dict]:
+    """Offline (Ollama) models here are text-only: drop pictures and say so, instead of crashing."""
+    out = []
+    for m in messages:
+        if isinstance(m.get("content"), list):
+            text = " ".join(p.get("text", "") for p in m["content"] if p.get("type") == "text")
+            m = {"role": m["role"], "content": text + "\n(A picture of the window was attached but offline mode "
+                                                      "cannot read pictures. Say that you could not read it.)"}
+        out.append(m)
+    return out
+
+
 def stream_messages(messages: list[dict]) -> Iterator[str]:
     """Stream a raw message list (used for follow-up questions)."""
     if CONFIG.provider == "ollama":
+        messages = _text_only(messages)
         try:
             import ollama
         except (ImportError, ModuleNotFoundError) as e:

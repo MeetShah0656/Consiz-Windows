@@ -41,7 +41,7 @@ def test_gather_asks_once_redacts_and_caps():
         return "Total 5000 password: hunter22secret " + "x" * 20000, "tree"
 
     confirm = lambda titles: asked.append(titles) or True            # noqa: E731
-    block, declined = pc_mode.gather_contents([1], WINS, read_text, confirm, lambda m: None)
+    block, _imgs, declined = pc_mode.gather_contents([1], WINS, read_text, confirm, lambda m: None)
     assert not declined and reads == [101] and asked == [["excel.exe: Report.xlsx - Excel"]]
     assert "hunter22secret" not in block and "REDACTED" in block
     assert len(block) <= pc_mode.MAX_PER_WINDOW + 200
@@ -51,20 +51,20 @@ def test_gather_asks_once_redacts_and_caps():
 
 def test_gather_declined_reads_nothing():
     reads = []
-    block, declined = pc_mode.gather_contents([1], WINS, lambda h: reads.append(h) or ("t", "tree"),
+    block, _imgs, declined = pc_mode.gather_contents([1], WINS, lambda h: reads.append(h) or ("t", "tree"),
                                               lambda t: False, lambda m: None)
     assert declined and block == "" and reads == []
 
 
 def test_gather_blocks_sensitive_and_never_asks_for_them():
     asked, reads = [], []
-    block, declined = pc_mode.gather_contents([3, 4], WINS, lambda h: reads.append(h) or ("secret", "tree"),
+    block, _imgs, declined = pc_mode.gather_contents([3, 4], WINS, lambda h: reads.append(h) or ("secret", "tree"),
                                               lambda t: asked.append(t) or True, lambda m: None)
     assert not declined and reads == [] and asked == [] and block.count("NOT READ") == 2
 
 
 def test_browser_page_hidden_gives_the_accessibility_hint():
-    block, _ = pc_mode.gather_contents([2], WINS, lambda h: ("Inbox", "tree"), lambda t: True, lambda m: None)
+    block, _imgs, _ = pc_mode.gather_contents([2], WINS, lambda h: ("Inbox", "tree"), lambda t: True, lambda m: None)
     assert "chrome://accessibility" in block and "Native accessibility API support" in block
 
 
@@ -139,3 +139,94 @@ def test_run_only_calls_the_platform_launcher(monkeypatch):
     assert pc_actions.run(pc_actions.parse("ACTION: open_settings storage", WINS)) == (True, "Opened.")
     assert pc_actions.run(pc_actions.parse("ACTION: focus_window 1", WINS)) == (True, "Switched.")
     assert calls == [("launch", "ms-settings:storagesense"), ("focus", 101)]
+
+
+# ------------------------------------------------------------------ pictures for apps that hide their text
+def test_thin_text_falls_back_to_a_picture_of_that_window():
+    shots, notes = [], []
+    block, images, declined = pc_mode.gather_contents(
+        [2], WINS, lambda h: ("Inbox", "tree"), lambda t: True, notes.append,
+        capture_image=lambda h: shots.append(h) or "QUJD")
+    assert not declined and shots == [102] and images == ["QUJD"]
+    assert "PICTURE of the window" in block and "image 1" in block and any("picture" in n.lower() for n in notes)
+
+
+def test_enough_text_means_no_picture():
+    block, images, _ = pc_mode.gather_contents([1], WINS, lambda h: ("x" * 600, "tree"), lambda t: True,
+                                               lambda m: None, capture_image=lambda h: pytest.fail("no picture needed"))
+    assert images == [] and "xxxx" in block
+
+
+def test_pictures_are_capped_and_a_failed_capture_falls_back_to_text_hint():
+    wins = [dict(WINS[1], hwnd=200 + i, title=f"Tab {i}") for i in range(4)]
+    _b, images, _ = pc_mode.gather_contents([1, 2, 3], wins, lambda h: ("", "none"), lambda t: True,
+                                            lambda m: None, capture_image=lambda h: "AAAA")
+    assert len(images) == pc_mode.MAX_IMAGES
+    pc_mode._allowed.clear()
+    block, images, _ = pc_mode.gather_contents([1], wins, lambda h: ("", "none"), lambda t: True,
+                                               lambda m: None, capture_image=lambda h: None)
+    assert images == [] and "chrome://accessibility" in block
+
+
+def test_sensitive_windows_never_get_a_picture_either():
+    shots = []
+    pc_mode.gather_contents([3, 4], WINS, lambda h: ("", "none"), lambda t: True, lambda m: None,
+                            capture_image=lambda h: shots.append(h) or "AAAA")
+    assert shots == []
+
+
+def test_read_round_trip_attaches_the_picture_to_the_second_call():
+    seen = []
+    fn = _stream_fn(["READ: 2\n", "- The page says Raise your team rate limit.\n"], seen)
+    out = "".join(pc_mode.stream_answer("what does the page say?", [], "SNAP", WINS, stream_fn=fn,
+                                       read_text=lambda h: ("", "none"), confirm=lambda t: True,
+                                       notify=lambda m: None, capture_image=lambda h: "QUJD"))
+    assert "rate limit" in out
+    last = seen[1][-1]["content"]
+    assert isinstance(last, list) and last[0]["type"] == "text" and last[1]["image_url"]["url"].endswith("QUJD")
+    assert llm.has_images(seen[1]) and not llm.has_images(seen[0])
+
+
+def test_vision_requests_use_the_image_reading_models(monkeypatch):
+    sent = {}
+
+    class R:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def iter_lines(self):
+            return iter([b"data: [DONE]"])
+
+    monkeypatch.setattr(llm, "_server_url", lambda: "")
+    monkeypatch.setattr(llm, "_api_key", lambda: "k")
+    monkeypatch.setattr(llm.requests, "post", lambda url, json=None, **kw: sent.update(body=json) or R())
+    with_pic = llm.pc_messages("S", [], "q", contents="C", images=["QUJD"])
+    list(llm._openrouter_sse(with_pic, llm._REASONING_OFF, 50))
+    assert sent["body"]["model"] == llm.CONFIG.vision_model and "gemma" in sent["body"]["model"]
+    list(llm._openrouter_sse(llm.pc_messages("S", [], "q"), llm._REASONING_OFF, 50))
+    assert sent["body"]["model"] == llm.CONFIG.openrouter_model
+
+
+def test_capture_helper_returns_a_real_jpeg_of_a_window():
+    import base64
+    import ctypes
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows capture")
+    from consiz.platform.win32 import readwin
+    hwnd = ctypes.windll.user32.GetForegroundWindow() or ctypes.windll.user32.GetDesktopWindow()
+    pic = readwin.capture_window_jpeg_b64(hwnd)
+    if pic is None:
+        pytest.skip("foreground window not capturable right now (minimized/blocked)")
+    raw = base64.b64decode(pic)
+    assert raw[:3] == b"\xff\xd8\xff" and len(raw) < 1_400_000
+
+
+def test_prompt_forbids_the_cant_see_inside_answer():
+    first = llm.pc_messages("S", [], "q")[0]["content"]
+    assert "NEVER tell the user that you only see titles" in first

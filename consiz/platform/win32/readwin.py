@@ -81,3 +81,55 @@ def read_window_text(hwnd: int, max_chars: int = MAX_CHARS, max_seconds: float =
         pass
     text = "\n".join(pieces)[:max_chars]
     return text, ("tree" if text else "none")
+
+
+# ---------------------------------------------------------------- picture of a window (for apps that hide their text)
+def capture_window_jpeg_b64(hwnd: int, max_side: int = 1400, quality: int = 72) -> str | None:
+    """A JPEG picture of ONE window as base64, or None (minimized, empty, or blocked by the app).
+    Uses PrintWindow, so it works even if other windows cover it; the picture never touches the disk."""
+    import base64
+    import ctypes
+    import io
+    from ctypes import wintypes
+
+    from PIL import Image
+
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+        return None
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD)]
+
+    r = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    w, h = r.right - r.left, r.bottom - r.top
+    if w < 50 or h < 50 or w * h > 40_000_000:
+        return None
+    hdc = user32.GetWindowDC(hwnd)
+    mem = gdi32.CreateCompatibleDC(hdc)
+    bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
+    try:
+        gdi32.SelectObject(mem, bmp)
+        if not user32.PrintWindow(hwnd, mem, 2):          # 2 = PW_RENDERFULLCONTENT (GPU-drawn web pages too)
+            return None
+        bi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0)
+        buf = ctypes.create_string_buffer(w * h * 4)
+        gdi32.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(bi), 0)
+    finally:
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(mem)
+        user32.ReleaseDC(hwnd, hdc)
+    img = Image.frombuffer("RGBA", (w, h), buf, "raw", "BGRA", 0, 1).convert("RGB")
+    if all(hi < 6 for _lo, hi in img.getextrema()):       # a blank (all-black) capture means the app blocked it
+        return None
+    if max(img.size) > max_side:
+        scale = max_side / max(img.size)
+        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=quality, optimize=True)
+    return base64.b64encode(out.getvalue()).decode("ascii")
