@@ -32,6 +32,7 @@ MOD_WIN = 0x0008
 
 HOTKEY_ID = 0xC001
 HOTKEY_DICTATE_ID = 0xC002
+HOTKEY_PC_ID = 0xC003
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -99,7 +100,9 @@ class Trigger:
         on_fire: Callable[[str], None],
         on_busy: Callable[[], None] | None = None,
         on_dictate: Callable[[str], None] | None = None,
+        on_pc: Callable[[str], None] | None = None,
     ):
+        self._on_pc = on_pc
         self._on_fire = on_fire
         self._on_busy = on_busy
         self._on_dictate = on_dictate
@@ -144,6 +147,12 @@ class Trigger:
 
         threading.Thread(target=run, name="consiz-dictate-worker", daemon=True).start()
 
+    def _fire_pc(self, source: str) -> None:
+        if self._on_pc is None:
+            return
+        # Opening the PC chat is quick; the slow snapshot runs later on the ask worker, so no busy lock here.
+        threading.Thread(target=self._on_pc, args=(source,), name="consiz-pc-worker", daemon=True).start()
+
     def _mouse_hook_proc(self, nCode: int, wParam: int, lParam: int) -> int:
         if nCode >= 0:
             if wParam == WM_MBUTTONDOWN:
@@ -187,6 +196,12 @@ class Trigger:
                 if user32.RegisterHotKey(None, HOTKEY_DICTATE_ID, mods_d, vk_d):
                     self._native_registered.add("dictate")
 
+        pc_hk_str = getattr(CONFIG, "pc_hotkey", "")
+        if self._on_pc and pc_hk_str:
+            parsed_p = parse_hotkey_to_win32(pc_hk_str)
+            if parsed_p and user32.RegisterHotKey(None, HOTKEY_PC_ID, parsed_p[0], parsed_p[1]):
+                self._native_registered.add("pc")
+
         # 2. Install Low-Level Mouse Hook with global permanent callback reference
         self._mouse_cb = HOOKPROC(self._mouse_hook_proc)
         _PERMANENT_HOOK_CB = self._mouse_cb
@@ -208,6 +223,8 @@ class Trigger:
                     self._fire("hotkey")
                 elif msg.wParam == HOTKEY_DICTATE_ID:
                     self._fire_dictate("dictate-hotkey")
+                elif msg.wParam == HOTKEY_PC_ID:
+                    self._fire_pc("pc-hotkey")
             elif msg.message == 0x0113:  # WM_TIMER
                 # Watchdog tick: refresh mouse hook to ensure it never dies silently
                 if self._running:
@@ -224,6 +241,8 @@ class Trigger:
             user32.UnregisterHotKey(None, HOTKEY_ID)
         if "dictate" in self._native_registered:
             user32.UnregisterHotKey(None, HOTKEY_DICTATE_ID)
+        if "pc" in self._native_registered:
+            user32.UnregisterHotKey(None, HOTKEY_PC_ID)
 
     def start(self) -> None:
         self._running = True
@@ -240,6 +259,9 @@ class Trigger:
             fallback_hotkeys[CONFIG.hotkey] = lambda: self._fire("hotkey")
         if getattr(CONFIG, "dictate_hotkey", None) and self._on_dictate and "dictate" not in self._native_registered:
             fallback_hotkeys[CONFIG.dictate_hotkey] = lambda: self._fire_dictate("dictate-hotkey")
+
+        if getattr(CONFIG, "pc_hotkey", None) and self._on_pc and "pc" not in self._native_registered:
+            fallback_hotkeys[CONFIG.pc_hotkey] = lambda: self._fire_pc("pc-hotkey")
 
         if fallback_hotkeys:
             try:

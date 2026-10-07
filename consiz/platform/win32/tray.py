@@ -105,6 +105,7 @@ class SystemTray:
         on_settings: Optional[Callable[[], None]] = None,
         on_exit: Optional[Callable[[], None]] = None,
         on_sign_out: Optional[Callable[[], None]] = None,
+        on_pc: Optional[Callable[[str], None]] = None,
         get_user_label: Optional[Callable[[], str]] = None,
         is_signed_in: Optional[Callable[[], bool]] = None,
         on_sign_in: Optional[Callable[[], None]] = None,
@@ -112,6 +113,7 @@ class SystemTray:
     ) -> None:
         self.welcome = welcome
         self.on_sign_out = on_sign_out
+        self.on_pc = on_pc
         self.get_user_label = get_user_label
         self.is_signed_in = is_signed_in or (lambda: True)
         self.on_sign_in = on_sign_in
@@ -128,6 +130,10 @@ class SystemTray:
     def _trigger_explain(self, icon, item):
         if self.on_explain:
             threading.Thread(target=self.on_explain, args=("tray",), daemon=True).start()
+
+    def _trigger_pc(self, icon, item):
+        if self.on_pc:
+            threading.Thread(target=self.on_pc, args=("tray",), daemon=True).start()
 
     def _trigger_dictate(self, icon, item):
         if self.on_dictate:
@@ -197,6 +203,7 @@ class SystemTray:
         menu = Menu(
             Item("⚡ Consiz is active", None, enabled=False),
             Item("Explain Selection (Ctrl+Alt+S)", self._trigger_explain),
+            *([Item("Ask about my PC (Ctrl+Alt+A)", self._trigger_pc)] if self.on_pc else []),
             Item("Voice Dictate (Ctrl+Alt+D)", self._trigger_dictate),
             Menu.SEPARATOR,
             Item("🌐 Answer Language", _make_lang_menu()),

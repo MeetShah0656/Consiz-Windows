@@ -141,6 +141,7 @@ class Config:
 
     # --- Dictation & Voice (faster-whisper) ---
     dictate_hotkey: str = os.environ.get("CONSIZ_DICTATE_HOTKEY", "<ctrl>+<alt>+d")
+    pc_hotkey: str = os.environ.get("CONSIZ_PC_HOTKEY", "<ctrl>+<alt>+a")     # "Ask about my PC" (no selection needed)
     whisper_model: str = os.environ.get("WHISPER_MODEL", "small")
     whisper_device: str = os.environ.get("WHISPER_DEVICE", "cpu")
     whisper_compute_type: str = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")

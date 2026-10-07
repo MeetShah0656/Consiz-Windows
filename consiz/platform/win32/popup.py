@@ -147,6 +147,7 @@ class PopupUI:
         self.on_dictate: Callable[[CapturedContext, str], None] | None = None
         self.on_auth_needed: Callable[[], None] | None = None
         self.context = ""
+        self.mode = "selection"                # "selection" (explain what I picked) or "pc" (ask about my PC)
         self.last_answer = ""
         self.history: list[dict] = []          # follow-up turns: [{"role","content"}, ...]
         self._msg_texts: list[str] = []        # plain text per assistant message (for per-message Copy)
@@ -252,6 +253,10 @@ class PopupUI:
         chat.tag_configure("user_row", justify="right", rmargin=2)
         chat.tag_configure("warn", foreground=WARNING, lmargin1=4, lmargin2=18)
         chat.tag_configure("thinking", foreground=INK_MUTED, font=(FONT_TEXT, 9, "italic"), lmargin1=4)
+        chat.tag_configure("chip", foreground=MAROON_700, font=(FONT_TEXT, 10, "bold"), lmargin1=8, lmargin2=22,
+                           spacing1=3)
+        chat.tag_bind("chip", "<Enter>", lambda e: chat.config(cursor="hand2"))
+        chat.tag_bind("chip", "<Leave>", lambda e: chat.config(cursor="arrow"))
         chat.tag_configure("copylink", font=(FONT_TEXT, 8, "bold"), foreground=MAROON_700)
         chat.tag_bind("copylink", "<Enter>", lambda e: chat.config(cursor="hand2"))
         chat.tag_bind("copylink", "<Leave>", lambda e: chat.config(cursor="arrow"))
@@ -359,7 +364,7 @@ class PopupUI:
 
     def _set_placeholder(self) -> None:
         self.entry.delete("1.0", "end")
-        self.entry.insert("1.0", "Ask a follow-up…")
+        self.entry.insert("1.0", "Ask about your PC…" if self.mode == "pc" else "Ask a follow-up…")
         self.entry.config(fg=INK_MUTED, height=1)
         self._placeholder_on = True
 
@@ -681,8 +686,40 @@ class PopupUI:
         return "\n\n".join(f"{who}: {text}" for who, text in self._transcript if text)
 
     # ---------------------------------------------------------- worker-thread API
+    def open_pc_chat(self, at=None) -> None:
+        """Open an empty chat for "Ask about my PC" (no selection needed) with a few starter questions."""
+        point = at or _get_cursor_pos()
+        self.mode = "pc"
+        self.context, self.last_answer = "", ""
+        _dispatch(self._show_at, point, "Ask about my PC", "Reads program names, memory use and window titles on this PC")
+        _dispatch(self._pc_intro)
+
+    _PC_STARTERS = ("What is slowing my PC down?", "What am I working on right now?",
+                    "What starts with Windows?", "Is anything using the internet a lot?",
+                    "How full is my disk?")
+
+    def _pc_intro(self) -> None:
+        self._log("Ask me anything about this PC. Tap a question or type your own:" + chr(10), "ai_dim")
+        for i, q in enumerate(self._PC_STARTERS):
+            tag = f"chip{i}"
+            self.chat.config(state="normal")
+            self.chat.insert("end", f"  ›  {q}" + chr(10), ("chip", tag))
+            self.chat.tag_bind(tag, "<Button-1>", lambda e, text=q: self._ask_text(text))
+            self.chat.config(state="disabled")
+        self._ai_open = False
+        self.window.update_idletasks()
+        self._fit_height()                     # show all the starter questions without scrolling
+        self._activate()                       # the user asked for this window: let it take the keyboard
+
+    def _ask_text(self, text: str) -> None:
+        self.entry.delete("1.0", "end")
+        self.entry.insert("1.0", text)
+        self._placeholder_on = False
+        self._submit()
+
     def show_result(self, res: Result, at=None):
         point = at or _get_cursor_pos()
+        self.mode = "selection"
         self.context = res.source_content or res.body
         t0 = res.started_at or time.perf_counter()
 

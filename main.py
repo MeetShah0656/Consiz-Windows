@@ -137,6 +137,37 @@ def on_dictate_trigger(source: str) -> None:
         run_terminal_dictation(ctx)
 
 
+def _pc_mode_consent() -> bool:
+    """First use only: say plainly what PC mode reads and sends, and remember the answer."""
+    from consiz import prefs
+    if prefs.get("pc_mode_consent"):
+        return True
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    msg = ("Ask about my PC will look at, on this computer:" + chr(10) + "  - names of running programs and how much "
+           "memory/CPU they use" + chr(10) + "  - titles of open windows (not what is inside them)" + chr(10)
+           + "  - disk space, battery, startup programs" + chr(10) + chr(10)
+           + "When you ask a question, this summary (with passwords/keys removed) is sent to the AI to answer you. "
+           "Nothing is changed on your PC." + chr(10) + chr(10) + "Allow this?")
+    if ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - Ask about my PC", 0x24) != 6:   # YES/NO + question icon
+        return False
+    prefs.set("pc_mode_consent", True)
+    return True
+
+
+def on_pc_trigger(source: str) -> None:
+    """Hotkey/tray: open the 'Ask about my PC' chat (no selection needed)."""
+    if _login_needed():
+        return
+    if not _pc_mode_consent():
+        output.notify("PC mode was not allowed")
+        return
+    output.notify(f"PC mode: {source}")
+    if POPUP is not None:
+        POPUP.open_pc_chat()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="As Conciz terminal MVP")
     ap.add_argument("--text", help="process this text instead of listening")
@@ -233,6 +264,7 @@ def main() -> int:
     trig = Trigger(
         on_trigger,
         on_busy=lambda: output.notify("still working on the previous request — wait a moment"),
+        **({"on_pc": on_pc_trigger} if sys.platform == "win32" else {}),
     )
     trig.start()
     where = "in the terminal" if args.terminal else "in a popup next to your selection"
@@ -254,7 +286,17 @@ def main() -> int:
     def ask_handler(question: str) -> None:
         from consiz import llm
         output.notify(f"follow-up: {question}")
-        msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question)
+        if POPUP.mode == "pc":
+            from consiz import pc_mode
+            from consiz.platform.win32.popup import _dispatch
+            try:
+                text, summary = pc_mode.get_context()
+            except Exception as e:
+                raise llm.LLMError(f"could not read the PC: {e}")
+            _dispatch(POPUP._set_meta, f"Looked at: {summary} · {time.strftime('%H:%M:%S')}")
+            msgs = llm.pc_messages(text, list(POPUP.history), question)
+        else:
+            msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question)
         POPUP.show_followup(question, llm.stream_messages(msgs))
 
     def dictate_handler(ctx: CapturedContext, instruction) -> None:
@@ -320,6 +362,7 @@ def main() -> int:
                 on_dictate=lambda src: on_dictate_trigger(src),
                 on_settings=_open_settings,
                 on_exit=lambda: os._exit(0),
+                on_pc=lambda src: on_pc_trigger(src),
                 on_sign_out=_sign_out if auth_on else None,
                 get_user_label=(lambda: ("Signed in: " + _auth.display_name()) if _auth.signed_in()
                                 else "Not signed in") if auth_on else None,
