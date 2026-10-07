@@ -157,6 +157,8 @@ class PopupUI:
         self._thinking = False
         self._chat_busy = False
         self._action_n = 0
+        self._minimized = False
+        self._saved_h = 0
         self._placeholder_on = True
         self.window: tk.Toplevel | None = None
         self._lines: list[str] = []
@@ -204,6 +206,12 @@ class PopupUI:
         close_btn.bind("<Button-1>", lambda e: self.hide())
         close_btn.bind("<Enter>", lambda e: close_btn.configure(fg=MAROON_700))
         close_btn.bind("<Leave>", lambda e: close_btn.configure(fg=INK_MUTED))
+
+        min_btn = tk.Label(header, text="—", font=(FONT_TEXT, 10, "bold"), fg=sub_color, bg=bg_color, cursor="hand2")
+        min_btn.pack(side="right", padx=(8, 4))
+        min_btn.bind("<Button-1>", lambda e: self.toggle_minimize())
+        min_btn.bind("<Enter>", lambda e: min_btn.configure(fg=MAROON_700))
+        min_btn.bind("<Leave>", lambda e: min_btn.configure(fg=INK_MUTED))
 
         new_btn = tk.Label(header, text="↺ New chat", font=(FONT_TEXT, 8, "bold"), fg=MAROON_700, bg=bg_color,
                            cursor="hand2")
@@ -340,6 +348,13 @@ class PopupUI:
         win.bind("<Escape>", lambda e: self.hide())
 
         self.window = win
+        self.min_btn = min_btn
+        self._body_parts = [
+            (meta_lbl, dict(fill="x", side="top", pady=(0, 6))),
+            (footer, dict(fill="x", side="bottom", pady=(6, 0))),
+            (input_row, dict(fill="x", side="bottom", pady=(8, 0))),
+            (log_frame, dict(fill="both", expand=True, side="top")),
+        ]
         self.title_lbl, self.meta_lbl, self.chat = title_lbl, meta_lbl, chat
         self.text_widget = chat              # kept for older call sites
         self.entry, self.send_btn, self.copy_btn = entry, send_btn, copy_btn
@@ -494,9 +509,37 @@ class PopupUI:
         self._set_meta("Ask anything about your selected text")
         self._log("Ask a question about the text you selected, or anything else.", "ai_dim")
 
+    def toggle_minimize(self) -> None:
+        """A borderless window has no taskbar button, so minimize = collapse to just the title bar (click again
+        to expand). It stays where it is, out of the way, and keeps the whole conversation."""
+        if self.window is None:
+            return
+        self._restore() if self._minimized else self._minimize()
+
+    def _minimize(self) -> None:
+        self._saved_h = self.window.winfo_height()
+        for part, _opts in self._body_parts:
+            part.pack_forget()
+        self.window.update_idletasks()
+        w, x, y = self.window.winfo_width(), self.window.winfo_x(), self.window.winfo_y()
+        self.window.geometry(f"{w}x{self.window.winfo_reqheight() + 4}+{x}+{y}")
+        self._minimized = True
+        self.min_btn.config(text="▢")
+
+    def _restore(self) -> None:
+        for part, opts in self._body_parts:
+            part.pack(**opts)
+        self._minimized = False
+        self.min_btn.config(text="—")
+        w, x, y = self.window.winfo_width(), self.window.winfo_x(), self.window.winfo_y()
+        sh = self.window.winfo_screenheight()
+        h = max(self._saved_h, 260)
+        y = max(10, min(y, sh - h - 10))                  # never let the restored window run off the screen
+        self.window.geometry(f"{w}x{h}+{x}+{y}")
+
     def _fit_height(self) -> None:
         """Grow the window to fit the conversation (until 65% of the screen); never shrink a user-sized one."""
-        if self.window is None or self.user_size is not None:
+        if self.window is None or self.user_size is not None or self._minimized:
             return
         try:
             display_lines = self.chat.count("1.0", "end", "displaylines")
@@ -521,6 +564,8 @@ class PopupUI:
     def _show_at(self, point: tuple[int, int], title: str, meta: str) -> None:
         if self.window is None:
             self._build()
+        elif self._minimized:
+            self._restore()                               # a new answer always opens fully
 
         self._clear_chat()
         self.history.clear()
