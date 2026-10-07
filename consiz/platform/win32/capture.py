@@ -316,8 +316,12 @@ def explorer_selection() -> list[str]:
 
 
 # ---------------------------------------------------------------- UI Automation
-def uia_selected_text() -> str:
-    """Attempts to fetch selected text using UI Automation without touching the clipboard (W-03)."""
+def uia_selection_probe() -> tuple[str, bool]:
+    """(selected text, definitely_empty) via UI Automation, without touching the clipboard (W-03).
+
+    `definitely_empty` is True only when the focused control really exposes its selection and it is empty
+    (Notepad, Word, most editors): then there is nothing to copy and the slower, riskier Ctrl+C fallback is skipped.
+    When the app does not expose a selection (browsers, many Electron apps) we cannot know, so it stays False."""
     init_com_for_thread()
     try:
         import uiautomation as auto
@@ -326,13 +330,19 @@ def uia_selected_text() -> str:
             tp = focused.GetTextPattern()
             if tp:
                 selections = tp.GetSelection()
-                if selections and len(selections) > 0:
-                    text = selections[0].GetText(-1)
-                    if text:
-                        return text
+                if selections is None:
+                    return "", False
+                texts = [r.GetText(-1) for r in selections] if len(selections) else []
+                joined = "".join(t for t in texts if t)
+                return (joined, False) if joined else ("", True)
     except Exception:
         pass
-    return ""
+    return "", False
+
+
+def uia_selected_text() -> str:
+    """Attempts to fetch selected text using UI Automation without touching the clipboard (W-03)."""
+    return uia_selection_probe()[0]
 
 
 # ---------------------------------------------------------------- Clipboard Fallback
@@ -435,6 +445,20 @@ def _press_ctrl_c() -> None:
         user32.keybd_event(VK_SHIFT, 0, 0, 0)
 
 
+# Programs where a simulated Ctrl+C is dangerous or private: a terminal treats Ctrl+C as "interrupt the running
+# program"; password managers must never have their contents copied by us.
+NO_COPY_PROCESSES = frozenset({
+    "cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe", "wt.exe", "conhost.exe", "openconsole.exe",
+    "mintty.exe", "bash.exe", "wsl.exe", "putty.exe", "kitty.exe", "alacritty.exe", "wezterm-gui.exe",
+    "keepass.exe", "keepassxc.exe", "1password.exe", "bitwarden.exe", "lastpass.exe", "dashlane.exe", "enpass.exe",
+    "nordpass.exe", "mstsc.exe",
+})
+
+
+def may_simulate_copy(app: str) -> bool:
+    return (app or "").lower() not in NO_COPY_PROCESSES
+
+
 def clipboard_fallback() -> tuple[str, list[str]]:
     """Simulates Ctrl+C safely without destroying the previous clipboard (W-01)."""
     import win32clipboard
@@ -505,13 +529,21 @@ def capture() -> CapturedContext:
 
         # Detect if foreground window is a browser
         is_browser = app.lower() in BROWSER_PROCESSES or any(win_title.endswith(s) for s in BROWSER_TITLE_SUFFIXES)
-        browser_info = build_browser_context(hwnd, app, win_title) if is_browser else {}
+        _bi: dict = {}
+
+        def get_browser_info() -> dict:
+            if is_browser and not _bi:
+                _bi.update(build_browser_context(hwnd, app, win_title))
+            return _bi
+
+        browser_info = {}
 
         # 2. UI Automation
-        text = uia_selected_text()
+        text, definitely_empty = uia_selection_probe()
         if _looks_like_address_bar(text):
             text = ""  # focus in browser address bar; fall back
         if text.strip():
+            browser_info = get_browser_info()
             ctx = CapturedContext(
                 source_app=browser_info.get("browser", app),
                 capture_method=CaptureMethod.TEXT_SELECTION,
@@ -524,14 +556,22 @@ def capture() -> CapturedContext:
                 ctx.source_meta = browser_info
             return ctx
 
-        # 3. Clipboard fallback (non-destructive)
+        if definitely_empty:
+            return CapturedContext(source_app=app, capture_method=CaptureMethod.NONE, raw_content="")   # fast path
+
+        # 3. Clipboard fallback (non-destructive) — never in terminals / password managers
+        if not may_simulate_copy(app):
+            return CapturedContext(source_app=app, capture_method=CaptureMethod.NONE, raw_content="",
+                                   note="this app does not allow copying by Consiz")
         text, paths = clipboard_fallback()
         if paths:
             return _path_context(app, paths)
         if _looks_like_address_bar(text):
-            return CapturedContext(source_app=browser_info.get("browser", app), capture_method=CaptureMethod.NONE, raw_content="",
-                                   paths=[], note="address bar was copied — click into the page text and reselect")
+            return CapturedContext(source_app=get_browser_info().get("browser", app), capture_method=CaptureMethod.NONE,
+                                   raw_content="", paths=[],
+                                   note="address bar was copied — click into the page text and reselect")
         if text.strip():
+            browser_info = get_browser_info()
             ctx = CapturedContext(
                 source_app=browser_info.get("browser", app),
                 capture_method=CaptureMethod.CLIPBOARD_FALLBACK,
@@ -544,7 +584,7 @@ def capture() -> CapturedContext:
                 ctx.source_meta = browser_info
             return ctx
 
-        return CapturedContext(source_app=browser_info.get("browser", app), capture_method=CaptureMethod.NONE, raw_content="")
+        return CapturedContext(source_app=app, capture_method=CaptureMethod.NONE, raw_content="")
     finally:
         uninit_com_for_thread()
 

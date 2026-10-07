@@ -157,6 +157,29 @@ class SystemTray:
         if self.on_sign_in:
             self.on_sign_in()
 
+    def _open_logs(self, icon, item):
+        from consiz import logs
+        try:
+            os.startfile(str(logs.log_folder()))
+        except OSError:
+            pass
+
+    def _copy_diagnostics(self, icon, item):
+        """Put version/settings/recent log lines on the clipboard so a user can paste them to support."""
+        from consiz import logs
+        try:
+            import win32clipboard
+            text = logs.diagnostics()
+            win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
+            finally:
+                win32clipboard.CloseClipboard()
+            icon.notify("Diagnostics copied. Paste them into your message to support.", "Consiz")
+        except Exception:
+            logs.exception("copy diagnostics")
+
     def _quit_app(self, icon, item):
         if self.icon:
             try:
@@ -200,6 +223,30 @@ class SystemTray:
                 )
             return Menu(*items)
 
+        def _make_trigger_menu():
+            """How Consiz is started with the mouse. The trigger re-reads this setting within ~3 seconds."""
+            from consiz import prefs
+            from consiz.platform.win32.mousegate import DEFAULT_MODE, MODES
+
+            labels = {"middle": "Middle click (passes through when nothing is selected)",
+                      "ctrl_middle": "Ctrl + middle click only (never touches normal clicks)",
+                      "hotkey": "Keyboard only (Ctrl+Alt+S / Ctrl+Alt+A)"}
+
+            def current():
+                import os
+                m = os.environ.get("CONSIZ_TRIGGER_MODE") or prefs.get("trigger_mode") or DEFAULT_MODE
+                return m if m in MODES else DEFAULT_MODE
+
+            def choose(mode):
+                def _handler(icon, item):
+                    prefs.set("trigger_mode", mode)
+                return _handler
+
+            def is_on(mode):
+                return lambda item: current() == mode
+
+            return Menu(*[Item(labels[m], choose(m), checked=is_on(m), radio=True) for m in MODES])
+
         menu = Menu(
             Item("⚡ Consiz is active", None, enabled=False),
             Item("Explain Selection (Ctrl+Alt+S)", self._trigger_explain),
@@ -207,8 +254,13 @@ class SystemTray:
             Item("Voice Dictate (Ctrl+Alt+D)", self._trigger_dictate),
             Menu.SEPARATOR,
             Item("🌐 Answer Language", _make_lang_menu()),
+            Item("🖱 Trigger", _make_trigger_menu()),
             Item("⚙️ Configure API Key & Settings...", self._open_settings),
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
+            Item("Help && diagnostics", Menu(
+                Item("Open log folder", self._open_logs),
+                Item("Copy diagnostics for support", self._copy_diagnostics),
+            )),
             Menu.SEPARATOR,
             *([Item(lambda item: self.get_user_label(), None, enabled=False)] if self.get_user_label else []),
             *([Item("Sign in…", self._sign_in, visible=lambda item: not self.is_signed_in())]

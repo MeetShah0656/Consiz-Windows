@@ -88,7 +88,8 @@ def run_terminal_dictation(ctx: CapturedContext) -> None:
     if not res.text:
         output.notify("No speech detected.")
         return
-    output.notify(f"🎙 Dictated ({res.language_name} ~{res.language_probability:.0%}): \"{res.text}\" — processing…")
+    print(f"🎙 Dictated ({res.language_name} ~{res.language_probability:.0%}): \"{res.text}\" — processing…", flush=True)
+    output.notify("dictation transcribed — processing…")
     result = process_dictation(ctx, res)
     output.render(result)
 
@@ -108,15 +109,31 @@ def _login_needed() -> bool:
     return True
 
 
-def on_trigger(source: str) -> None:
+_LOGIN_PROMPTED_AT = [0.0]
+
+
+def on_trigger(source: str):
+    """Returns "passthrough" when a MIDDLE CLICK should go back to the app it was meant for (T-01)."""
+    if source == "middle-click" and time.time() - _LOGIN_PROMPTED_AT[0] < 120:
+        from consiz import auth
+        if auth.enabled() and not auth.signed_in():
+            return "passthrough"                      # already asked for sign-in a moment ago: do not nag
     if _login_needed():
-        return
+        _LOGIN_PROMPTED_AT[0] = time.time()
+        return None
     from consiz.capture import capture
     output.notify(f"trigger: {source}")
+    t_cap = time.perf_counter()
     ctx = capture()
-    output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} — processing…")
+    output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} "
+                  f"in {(time.perf_counter() - t_cap) * 1000:.0f} ms — processing…")
     if ctx.is_empty and POPUP is not None and sys.platform == "win32":
-        # Nothing selected: instead of a dead-end error, offer to look at the PC (it asks permission first).
+        if source == "middle-click":
+            # A plain middle click with nothing selected is NOT for Consiz (open link, close tab, autoscroll):
+            # hand it back to the app instead of showing an error.
+            output.notify("nothing selected — click passed through to the app")
+            return "passthrough"
+        # Keyboard hotkey with nothing selected: offer to look at the PC (it asks permission first).
         if on_pc_trigger("nothing-selected", note="Nothing was selected, so this is Ask about my PC."):
             return
     res = process(ctx)
@@ -197,6 +214,9 @@ def on_pc_trigger(source: str, note: str = "") -> bool:
 
 
 def main() -> int:
+    from consiz import __version__, logs
+    logs.setup()
+    logs.get().info("Consiz %s starting (%s)", __version__, "exe" if getattr(sys, "frozen", False) else "source")
     ap = argparse.ArgumentParser(description="As Conciz terminal MVP")
     ap.add_argument("--text", help="process this text instead of listening")
     ap.add_argument("--path", help="process this file/folder instead of listening")
@@ -313,7 +333,7 @@ def main() -> int:
 
     def ask_handler(question: str) -> None:
         from consiz import llm
-        output.notify(f"follow-up: {question}")
+        output.notify(f"follow-up question ({len(question)} chars)")
         if POPUP.mode == "pc":
             from consiz import pc_mode
             from consiz.platform.win32.popup import _dispatch
@@ -333,7 +353,7 @@ def main() -> int:
 
     def dictate_handler(ctx: CapturedContext, instruction) -> None:
         lang_str = f" [{instruction.language_name}]" if hasattr(instruction, "language_name") else ""
-        output.notify(f"voice instruction{lang_str}: {instruction}")
+        output.notify(f"voice instruction received{lang_str}")
         res = process_dictation(ctx, instruction)
         POPUP.show_result(res)
 
@@ -414,5 +434,23 @@ def main() -> int:
     return 0
 
 
+def _fatal(exc: BaseException) -> int:
+    from consiz import logs
+    logs.get().critical("FATAL: Consiz stopped", exc_info=(type(exc), exc, exc.__traceback__))
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            None, "Consiz hit an unexpected error and had to stop." + chr(10) + chr(10) + "Details were saved to:"
+            + chr(10) + str(logs.LOG_FILE) + chr(10) + chr(10) + "Please send that file to support.", "Consiz", 0x10)
+    return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except BaseException as _e:                      # noqa: BLE001 - last line of defence
+        sys.exit(_fatal(_e))

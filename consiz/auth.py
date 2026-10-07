@@ -29,20 +29,13 @@ TIMEOUT_S = 20
 GOOGLE_WAIT_S = 180
 
 
-LOG_FILE = prefs.STORE.parent / "consiz.log"
 _attempt = {"n": 0}
 
 
 def log(msg: str) -> None:
-    """Append one line to ~/.consiz/consiz.log (no secrets). Helps debug the windowless exe."""
-    try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if LOG_FILE.exists() and LOG_FILE.stat().st_size > 200_000:
-            LOG_FILE.write_text("")
-        with LOG_FILE.open("a", encoding="utf-8") as fh:
-            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + chr(10))
-    except OSError:
-        pass
+    """Auth events go to the shared application log (no tokens, no emails — callers only pass event names)."""
+    from . import logs
+    logs.get().info(msg)
 
 
 def cancel_pending() -> None:

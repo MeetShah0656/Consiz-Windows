@@ -106,15 +106,20 @@ def _get_root() -> tk.Tk:
     if _ROOT is None:
         _ROOT = tk.Tk()
         _ROOT.withdraw()
+
+        def _tk_error(exc, val, tb):               # errors inside button/key handlers: log them, keep running
+            from consiz import logs
+            logs.get().error("Tk callback failed: %s", getattr(exc, "__name__", exc), exc_info=(exc, val, tb))
+        _ROOT.report_callback_exception = _tk_error
         # Poll UI queue on main loop
         def poll_queue():
             while not _UI_QUEUE.empty():
                 try:
                     fn, args = _UI_QUEUE.get_nowait()
                     fn(*args)
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
+                except Exception:
+                    from consiz import logs
+                    logs.exception("UI callback")
             if _ROOT:
                 _ROOT.after(25, poll_queue)
         _ROOT.after(25, poll_queue)

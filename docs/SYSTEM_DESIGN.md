@@ -52,7 +52,7 @@ Shared logic lives in `consiz/` (never forked per platform); OS code lives in `c
 
 | Layer | Modules | Notes |
 |---|---|---|
-| TRIGGER | `platform/win32/trigger.py` | `WH_MOUSE_LL` hook swallows middle button; RegisterHotKey for Ctrl+Alt+S / +A / +D; pynput fallback |
+| TRIGGER | `platform/win32/trigger.py`, `mousegate.py` | `WH_MOUSE_LL` hook + a pure click/drag state machine: a middle CLICK is Consiz's only in the chosen mode (middle / Ctrl+middle / keyboard-only) and outside excluded apps; nothing selected → the click is re-sent to the app; drags always go to the app. RegisterHotKey for Ctrl+Alt+S / +A / +D; pynput fallback |
 | CAPTURE | `platform/win32/capture.py`, `readwin.py`, `sysinfo.py` | selection (UIA TextPattern → Ctrl+C fallback), window text (UIA), window picture (PrintWindow), PC snapshot (psutil + EnumWindows) |
 | CLASSIFY / SECURITY | `classify.py`, `security.py` | rule-based type; redaction regexes |
 | ROUTER | `router.py` | explain-mode dispatcher, all error states |
@@ -62,6 +62,7 @@ Shared logic lives in `consiz/` (never forked per platform); OS code lives in `c
 | AUTH | `auth.py`, `platform/win32/login.py` | Google PKCE; refresh token in Credential Manager |
 | UI | `platform/win32/popup.py`, `tray.py`, `onboarding.py`, `settings.py` | chat popup, minimize, chips/buttons, tray menu |
 | CONFIG | `config.py`, `prefs.py`, `.env`, baked `_build_config.py` | tunables only here; real env wins over baked |
+| LOGGING | `logs.py` | one rotating log file, secrets scrubbed, no user text; crash hooks for main/threads/Tk; diagnostics text for support |
 
 **Threads:** UI loop on the main thread (Tk). Trigger → one worker per request (busy lock for Explain). Ask / PC questions run on their own worker and write only to the chat via `_dispatch`. The mouse-hook callback returns immediately.
 

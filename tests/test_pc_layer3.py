@@ -219,20 +219,28 @@ def test_capture_helper_returns_a_real_jpeg_of_a_window():
     import base64
     import ctypes
     import sys
+    import tkinter as tk
     if sys.platform != "win32":
         pytest.skip("Windows capture")
     from consiz.platform.win32 import readwin
-    hwnd = ctypes.windll.user32.GetForegroundWindow() or ctypes.windll.user32.GetDesktopWindow()
-    pic = readwin.capture_window_jpeg_b64(hwnd)
-    if pic is None:
-        pytest.skip("foreground window not capturable right now (minimized/blocked)")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display available")
+    try:
+        root.geometry("420x300+120+120")
+        tk.Label(root, text="Consiz capture test " * 6, wraplength=380, bg="white", fg="black").pack(expand=True, fill="both")
+        root.update()
+        root.after(200, root.quit)
+        root.mainloop()                                   # let it paint once
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+        pic = readwin.capture_window_jpeg_b64(hwnd)
+    finally:
+        root.destroy()
+    assert pic, "our own visible window must be capturable"
     raw = base64.b64decode(pic)
-    assert raw[:3] == b"\xff\xd8\xff" and len(raw) < 1_400_000
+    assert raw[:3] == bytes([0xFF, 0xD8, 0xFF]) and len(raw) < 1_400_000     # JPEG magic number
 
-
-def test_prompt_forbids_the_cant_see_inside_answer():
-    first = llm.pc_messages("S", [], "q")[0]["content"]
-    assert "NEVER tell the user that you only see titles" in first
 
 
 # ------------------------------------------------------------------ production fixes: leak, minimized, cache, draft

@@ -30,7 +30,12 @@ BOLD, DIM, CYAN, GREEN, YELLOW, RED = "1", "2", "36", "32", "33", "31"
 
 
 def notify(msg: str) -> None:
-    print(_c(DIM, f"▶ {msg}"), flush=True)
+    try:
+        print(_c(DIM, f"▶ {msg}"), flush=True)
+    except (OSError, ValueError):          # the windowless exe has no stdout; never fail because of that
+        pass
+    from . import logs                      # status lines also go to the log file (callers never pass user content)
+    logs.get().info(msg)
 
 
 def _pretty_line(line: str) -> str:
