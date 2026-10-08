@@ -26,6 +26,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "cid")
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    for name in ("OPENROUTER_MODEL", "OPENROUTER_FALLBACKS", "VISION_MODEL", "VISION_FALLBACKS"):
+        monkeypatch.delenv(name, raising=False)                          # a developer's own .env must not change tests
     srv._recent.clear()
     monkeypatch.setattr(srv, "_verify", lambda auth: {"sub": "u1", "email": "a@b.com"} if auth == "Bearer good" else
                         (_ for _ in ()).throw(srv.HTTPException(401, "Sign in required.")))
@@ -36,6 +38,8 @@ def client(tmp_path, monkeypatch):
         return _FakeUpstream()
 
     monkeypatch.setattr(srv.requests, "post", fake_post)
+    monkeypatch.setattr(srv, "_live_model_ids", lambda: set())          # tests never call the real model list
+    srv._mem_counts.clear()
     c = TestClient(srv.app)
     c.sent = sent
     return c
@@ -46,8 +50,10 @@ BODY = {"messages": [{"role": "user", "content": "hello"}]}
 
 
 def test_health_open(client):
-    body = client.get("/health").json()
-    assert body["ok"] is True and body["storage"] == "sqlite" and body["db_ok"] is True
+    cheap = client.get("/health").json()
+    assert cheap == {"ok": True, "storage": "sqlite"}                    # no database call: it is the wake-up ping
+    deep = client.get("/health?deep=1").json()
+    assert deep["ok"] is True and deep["db_ok"] is True
 
 
 def test_public_pages_for_google_consent_screen(client):
@@ -151,3 +157,101 @@ def test_text_request_still_uses_the_text_model(client):
 ])
 def test_picture_rules(client, body, code):
     assert client.post("/v1/chat/completions", json=body, headers=GOOD).status_code == code
+
+
+# ------------------------------------------------------------------ speed + resilience (measured problems)
+def test_counting_both_limits_is_one_database_statement(client, monkeypatch):
+    seen = []
+    real_connect = srv.sqlite3.connect
+
+    def connect(path, *a, **k):
+        con = real_connect(path, *a, **k)
+        con.set_trace_callback(lambda sql: seen.append(sql.split()[0].upper()))
+        return con
+
+    monkeypatch.setattr(srv.sqlite3, "connect", connect)
+    srv._take_quota({"sub": "u9", "email": "u9@x.com"}, "9.9.9.9")
+    data_statements = [x for x in seen if x in ("INSERT", "SELECT", "UPDATE")]
+    assert data_statements == ["INSERT"]                                 # was SELECT+INSERT for each of 2 keys
+
+
+def test_refused_request_is_not_charged(client, monkeypatch):
+    monkeypatch.setenv("DAILY_LIMIT", "1")
+    info = {"sub": "u8", "email": "u8@x.com"}
+    srv._take_quota(info, "")
+    for _ in range(3):
+        with pytest.raises(srv.HTTPException):
+            srv._take_quota(info, "")
+    got = srv._run_db(lambda cur, ph: cur.execute(f"SELECT n FROM usage WHERE sub={ph}", ("u8",)).fetchone())
+    assert got[0] == 1                                                   # the refusals did not inflate the count
+
+
+def test_database_down_keeps_the_service_up_with_memory_limits(client, monkeypatch):
+    def down(work):
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr(srv, "_run_db", down)
+    monkeypatch.setenv("DAILY_LIMIT", "2")
+    codes = [client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]                                      # still answering, still limiting
+
+
+def test_stale_pooled_connection_is_retried_once(client):
+    class OperationalError(Exception):
+        pass
+    OperationalError.__module__ = "psycopg2.errors"
+    calls = []
+
+    def work(cur, ph):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OperationalError("server closed the connection")
+        return "ok"
+
+    assert srv._run_db(work) == "ok" and len(calls) == 2
+    with pytest.raises(ValueError):                                      # other errors are not retried
+        srv._run_db(lambda cur, ph: (_ for _ in ()).throw(ValueError("bug")))
+
+
+def test_dead_models_are_dropped_and_the_auto_router_is_the_safety_net(monkeypatch):
+    monkeypatch.setattr(srv, "_live_model_ids", lambda: {"good/one:free", "good/two:free", srv.AUTO_ROUTER})
+    assert srv._pick_models(["dead/old:free", "good/one:free", "good/two:free"]) == [
+        "good/one:free", "good/two:free", srv.AUTO_ROUTER]
+    assert srv._pick_models(["dead/a:free", "dead/b:free"]) == [srv.AUTO_ROUTER]
+    monkeypatch.setattr(srv, "_live_model_ids", lambda: set())           # list unavailable: trust the configuration
+    assert srv._pick_models(["a:free", "b:free", "c:free"]) == ["a:free", "b:free", srv.AUTO_ROUTER]
+
+
+def test_default_models_are_not_the_removed_one(client):
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    models = client.sent["payload"]["models"]
+    assert "ling-3.0-flash-fin" not in " ".join(models) and models[-1] == srv.AUTO_ROUTER and len(models) <= 3
+
+
+def test_shared_free_allowance_used_up_gets_a_clear_message(client, monkeypatch):
+    class Limited(_FakeUpstream):
+        status_code = 429
+        text = '{"error":{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000"}}'
+
+    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: Limited())
+    r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert r.status_code == 503 and "5:30 AM IST" in r.json()["detail"] and r.headers["retry-after"] == "3600"
+    monkeypatch.setenv("DAILY_LIMIT", "1")                                # and the user is not charged for it
+    assert client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code == 503
+
+
+def test_ordinary_provider_rate_limit_says_busy_not_used_up(client, monkeypatch):
+    class Busy(_FakeUpstream):
+        status_code = 429
+        text = '{"error":{"message":"Provider returned error"}}'
+
+    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: Busy())
+    r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert r.status_code == 503 and "busy" in r.json()["detail"].lower() and "allowance" not in r.json()["detail"]
+
+
+def test_default_models_are_the_measured_fast_ones(client):
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    models = client.sent["payload"]["models"]
+    assert models[0] == "nvidia/nemotron-3-super-120b-a12b:free" and models[1].endswith("ling-3.0-flash-sante:free")
+    assert models[-1] == srv.AUTO_ROUTER

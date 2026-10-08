@@ -161,7 +161,8 @@ def revalidate() -> bool:
     if not (enabled() and tok):
         return signed_in()
     try:
-        _token_request({"grant_type": "refresh_token", "refresh_token": tok})
+        res = _token_request({"grant_type": "refresh_token", "refresh_token": tok})
+        _remember_id(res)                    # keep the fresh ID token: the first question then needs no extra round trip
     except AuthError as e:
         if e.rejected:
             sign_out()
@@ -172,9 +173,15 @@ def revalidate() -> bool:
 _ID = {"token": "", "exp": 0.0}
 
 
+def _remember_id(res: dict) -> None:
+    if res.get("id_token"):
+        _ID["token"] = res["id_token"]
+        _ID["exp"] = time.time() + int(res.get("expires_in", 3600))
+
+
 def id_token() -> str:
     """A fresh Google ID token for the backend (cached ~50 min). Raises AuthError if not signed in."""
-    if _ID["token"] and _ID["exp"] - 60 > time.time():
+    if _ID["token"] and _ID["exp"] - 300 > time.time():       # refresh early (5 min) so a question never waits for it
         return _ID["token"]
     tok = _refresh_token()
     if not tok:
@@ -186,8 +193,7 @@ def id_token() -> str:
             sign_out()
             raise AuthError("Your sign-in expired. Please sign in again.")
         raise
-    _ID["token"] = res.get("id_token", "")
-    _ID["exp"] = time.time() + int(res.get("expires_in", 3600))
+    _remember_id(res)
     if not _ID["token"]:
         raise AuthError("Google didn't return an identity token. Sign in again.")
     return _ID["token"]

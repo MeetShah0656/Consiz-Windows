@@ -16,6 +16,16 @@ Audited 2026-10-07 against the code. "Verified" = I ran/grepped it; nothing here
 | T-09 | **Settings are thin** — only API key + language | `settings.py` has 2 options | trigger mode, hotkeys, start-with-Windows, PC mode (on/off, reset consent, forget allowed windows, blocklist editor), AI source (cloud/offline), account + sign-out, popup size/position memory (KI-13), "clear local data" | M |
 | T-10 | **No Pause** — no way to turn Consiz off for a game, a presentation or a remote desktop | tray has no toggle | tray "Pause Consiz" (unhooks the mouse, ignores hotkeys), auto-pause for full-screen apps | S |
 
+## Found 2026-10-08 while measuring a 10-second answer (all verified)
+
+| ID | Finding | Status |
+|---|---|---|
+| T-22 | **The whole product shares ONE OpenRouter key limited to 50 free-model requests per day** (1,000/day after adding 10 credits). Our per-user limit of 50 protects nobody — 1 heavy user empties it for everyone. Today's allowance was used up by testing; answers fail until 00:00 UTC (5:30 AM IST). | **BLOCKER for launch.** Add 10 credits to the OpenRouter account (one-time, free models still cost 0) or move to a paid model; server now says "Today's shared free AI allowance is used up…" instead of a generic error |
+| T-23 | Free models vary wildly: same question 3.4 s – 11 s; one auto-routed model took 11.6 s median in one run; the default model had been removed by OpenRouter so EVERY request first failed on it | ✅ server drops dead models by itself (checks OpenRouter's model list every 30 min), defaults = measured-fastest (`nemotron-3-super`, `ling-3.0-flash-sante`) + auto-router as safety net; `scripts/model_check.py` re-ranks them (run monthly) |
+| T-24 | Server added ~2.5 s per request: new database connection each time + 4 round trips + table check on every request | ✅ pooled connections, table created once, both limits counted in 1 statement; if the database is down the server keeps answering with in-memory limits (T-03 done) |
+| T-25 | App opened a new secure connection per question and paid a 2.6 s Google token refresh on the first question | ✅ one kept-alive connection, token refreshed at startup and 5 min before expiry, server pinged every 8 min so it never sleeps while the app runs |
+| T-26 | Render service is in the US while users are in India and the database is in Singapore (every request crosses the world twice) | OPEN — re-create the Render service in **Singapore**; expected to save roughly 1–2 s per answer. Needs a new Render service (region cannot be changed) |
+
 ## P1 — what makes it good, not just working
 
 | ID | Gap | Fix | Size |

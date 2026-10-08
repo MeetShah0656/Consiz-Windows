@@ -257,6 +257,8 @@ def main() -> int:
         output.notify(("✓ " if ok else "✗ ") + msg)
 
     one_shot = bool(args.text is not None or args.path or args.capture or args.dictate)
+    if not one_shot:
+        llm.start_keepalive()
     if one_shot:
         _report_health()
     else:   # the listener must not wait on the network (a sleeping server can take 30-50 s to answer)

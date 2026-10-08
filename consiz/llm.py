@@ -15,6 +15,30 @@ import requests
 from .config import CONFIG
 
 
+# ONE session for all AI calls: reuses the HTTPS connection (a fresh TLS handshake from India to the server costs
+# about a second), so follow-up questions and the startup ping make the next call faster.
+_SESSION = requests.Session()
+_SESSION.mount("https://", requests.adapters.HTTPAdapter(pool_connections=2, pool_maxsize=4))
+KEEPALIVE_SECONDS = 8 * 60          # the free server sleeps after ~15 min idle; a cheap ping every 8 min keeps it warm
+
+
+def start_keepalive() -> None:
+    """While the app runs, ping the server's cheap /health so it never falls asleep (a cold start is 30-60 s)."""
+    import threading
+
+    def loop():
+        while True:
+            time.sleep(KEEPALIVE_SECONDS)
+            url = _server_url()
+            if url:
+                try:
+                    _SESSION.get(f"{url}/health", timeout=20)
+                except requests.exceptions.RequestException:
+                    pass
+
+    threading.Thread(target=loop, name="consiz-keepalive", daemon=True).start()
+
+
 class LLMError(Exception):
     """Backend unreachable / timed out / bad key / model missing. Router maps this to an ErrorState."""
 
@@ -319,7 +343,7 @@ def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> I
         for attempt in range(attempts):
             last = attempt + 1 == attempts
             try:
-                with requests.post(f"{_base_url()}/chat/completions", headers=headers, json=body,
+                with _SESSION.post(f"{_base_url()}/chat/completions", headers=headers, json=body,
                                    stream=True, timeout=(15 if on_server else 10, read_timeout)) as r:
                     if r.status_code in (502, 503, 504) and not last:
                         time.sleep(6)
@@ -419,7 +443,7 @@ def _http_error(r: requests.Response) -> str:
 def _health_openrouter() -> tuple[bool, str]:
     if _server_url():
         try:
-            ok = requests.get(f"{_server_url()}/health", timeout=10).status_code == 200
+            ok = _SESSION.get(f"{_server_url()}/health", timeout=10).status_code == 200
         except requests.exceptions.RequestException as e:
             return False, f"Conciz server unreachable ({type(e).__name__})"
         return (True, "Conciz server") if ok else (False, "Conciz server is not healthy")

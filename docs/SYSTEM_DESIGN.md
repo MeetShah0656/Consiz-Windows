@@ -152,7 +152,7 @@ One table: `usage(sub TEXT, email TEXT, day TEXT, n INTEGER, PRIMARY KEY(sub, da
 | KI-20 | Chat history keeps only answer text, not the window text/picture read earlier | **fixed 2026-10-07**: reads and pictures cached 5 min per window, so follow-ups do not re-read or re-photograph |
 | KI-21 | No "draft a message / tell X" intent in PC mode | **fixed 2026-10-07**: prompt writes a ready-to-send `Draft:`; user copies it; nothing is sent |
 | KI-22 | Model may echo the internal `READ: n` line in a normal answer | **fixed 2026-10-07**: any line mentioning `READ: <n>` is stripped before display |
-| KI-23 | Free text/vision models are rate-limited or overloaded | retries + fallbacks exist; paid routing is the real fix (§12) |
+| KI-23 | Free text/vision models are rate-limited or overloaded; **one shared OpenRouter key allows only 50 free requests/day** (1,000 with 10 credits) | server self-heals its model list, uses measured-fastest defaults and says clearly when the daily allowance is gone; **add credits before launch** (§12) |
 | KI-24 | Render free sleeps; first answer slow | wake ping + long timeout; paid always-on plan removes it |
 | KI-25 | PC mode and chat UI are Windows-only; macOS lacks them | port `sysinfo` + popup chat; shared modules already portable |
 

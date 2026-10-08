@@ -142,7 +142,7 @@ def check_server(base: str) -> None:
     import requests
     base = base.rstrip("/")
     try:
-        h = requests.get(base + "/health", timeout=90).json()
+        h = requests.get(base + "/health?deep=1", timeout=90).json()
     except Exception as e:
         record("FAIL", "server reachable", f"{type(e).__name__}: {e}"[:160])
         return

@@ -33,7 +33,6 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 SQLITE_PATH = os.environ.get("CONSIZ_SERVER_DB", "conciz_server.db")
 
 app = FastAPI(title="Conciz backend")
-_db_lock = threading.Lock()
 _g_request = g_requests.Request()
 _recent: dict[str, deque] = defaultdict(deque)      # per-user timestamps for the per-minute limit
 
@@ -43,62 +42,180 @@ def _cfg(name: str, default: str = "") -> str:
 
 
 # ------------------------------------------------------------------ storage (SQLite or Postgres)
+# Speed + resilience notes (measured: the old version spent ~2.5 s per request here):
+#  - Postgres connections are POOLED and kept alive: a fresh connection to a far-away database costs ~1 s.
+#  - The table is created once per process, not on every request.
+#  - Counting both limits (user + network) is ONE database round trip (multi-row upsert with RETURNING).
+#  - If the database is unreachable the server keeps answering, using best-effort in-memory limits (T-03).
+_pool: dict = {"p": None}
+_pool_lock = threading.Lock()
+_schema_ready = {"done": False}
+_mem_counts: dict[tuple[str, str], int] = defaultdict(int)       # fallback only: (key, day) -> n
+_mem_lock = threading.Lock()
+_SCHEMA = "CREATE TABLE IF NOT EXISTS usage (sub TEXT, email TEXT, day TEXT, n INTEGER, PRIMARY KEY (sub, day))"
+
+
 def _use_pg() -> bool:
     return _cfg("DATABASE_URL").startswith(("postgres://", "postgresql://"))
 
 
+def _pg_pool():
+    with _pool_lock:
+        if _pool["p"] is None:
+            from psycopg2 import pool
+            _pool["p"] = pool.ThreadedConnectionPool(
+                1, 6, _cfg("DATABASE_URL"), connect_timeout=8,
+                keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
+        return _pool["p"]
+
+
+def _is_connection_error(e: Exception) -> bool:
+    return type(e).__module__.startswith("psycopg2") and type(e).__name__ in ("OperationalError", "InterfaceError")
+
+
 @contextmanager
 def _db():
-    """Yields (connection, placeholder). Commits on success, rolls back on error."""
+    """Yields (cursor, placeholder). Commits on success, rolls back on error."""
     if _use_pg():
-        import psycopg2
-        con = psycopg2.connect(_cfg("DATABASE_URL"))
-        ph = "%s"
+        pool = _pg_pool()
+        con = pool.getconn()
+        bad = False
+        try:
+            cur = con.cursor()
+            if not _schema_ready["done"]:
+                cur.execute(_SCHEMA)
+                con.commit()
+                _schema_ready["done"] = True
+            yield cur, "%s"
+            con.commit()
+        except Exception as e:
+            bad = _is_connection_error(e)
+            if not bad:
+                try:
+                    con.rollback()
+                except Exception:
+                    bad = True
+            raise
+        finally:
+            pool.putconn(con, close=bad or bool(con.closed))
     else:
         con = sqlite3.connect(SQLITE_PATH)
-        ph = "?"
-    try:
-        cur = con.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS usage (sub TEXT, email TEXT, day TEXT, n INTEGER, "
-                    "PRIMARY KEY (sub, day))")
-        yield cur, ph
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
+        try:
+            cur = con.cursor()
+            cur.execute(_SCHEMA)
+            yield cur, "?"
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
+
+def _run_db(work):
+    """work(cursor, placeholder) -> result, in one transaction. A pooled connection the database closed while
+    idle is dropped and the work is retried once on a fresh one."""
+    for attempt in (1, 2):
+        try:
+            with _db() as (cur, ph):
+                return work(cur, ph)
+        except Exception as e:
+            if attempt == 1 and _is_connection_error(e):
+                continue
+            raise
 
 
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _bump(cur, ph: str, key: str, email: str, limit: int, what: str) -> None:
-    cur.execute(f"SELECT n FROM usage WHERE sub={ph} AND day={ph}", (key, _today()))
-    row = cur.fetchone()
-    if (row[0] if row else 0) >= limit:
-        raise HTTPException(429, f"{what} limit of {limit} answers reached. Try again tomorrow.")
-    cur.execute(f"INSERT INTO usage (sub, email, day, n) VALUES ({ph},{ph},{ph},1) "
-                f"ON CONFLICT(sub, day) DO UPDATE SET n = usage.n + 1", (key, email, _today()))
+def _bump_all(cur, ph: str, keys: list[tuple[str, str, int, str]]):
+    """Count one answer for every key in ONE statement. Returns (what, limit) of the first limit exceeded, else None
+    (and in that case the count is taken back so a refused request is not charged)."""
+    day = _today()
+    params: list = []
+    for key, email, _limit, _what in keys:
+        params += [key, email, day]
+    values = ",".join(f"({ph},{ph},{ph},1)" for _ in keys)
+    cur.execute(f"INSERT INTO usage (sub, email, day, n) VALUES {values} "
+                f"ON CONFLICT(sub, day) DO UPDATE SET n = usage.n + 1 RETURNING sub, n", params)
+    counts = {row[0]: row[1] for row in cur.fetchall()}
+    for key, _email, limit, what in keys:
+        if counts.get(key, 0) > limit:
+            cur.execute(f"UPDATE usage SET n = n - 1 WHERE day={ph} AND sub IN ({','.join([ph] * len(keys))})",
+                        [day] + [k[0] for k in keys])
+            return what, limit
+    return None
+
+
+def _bump_memory(keys: list[tuple[str, str, int, str]]):
+    day = _today()
+    with _mem_lock:
+        for key, _email, limit, what in keys:
+            if _mem_counts[(key, day)] >= limit:
+                return what, limit
+        for key, *_ in keys:
+            _mem_counts[(key, day)] += 1
+    return None
 
 
 def _take_quota(info: dict, ip: str) -> None:
-    with _db_lock, _db() as (cur, ph):
-        _bump(cur, ph, info["sub"], info["email"], int(_cfg("DAILY_LIMIT", "50")), "Daily")
-        if ip:
-            _bump(cur, ph, "ip:" + ip, "", int(_cfg("IP_DAILY_LIMIT", "300")), "Network daily")
+    keys = [(info["sub"], info["email"], int(_cfg("DAILY_LIMIT", "50")), "Daily")]
+    if ip:
+        keys.append(("ip:" + ip, "", int(_cfg("IP_DAILY_LIMIT", "300")), "Network daily"))
+    try:
+        over = _run_db(lambda cur, ph: _bump_all(cur, ph, keys))
+    except Exception as e:                                   # database down: stay up with in-memory limits
+        print(f"[server] database unavailable ({type(e).__name__}); using in-memory limits", flush=True)
+        over = _bump_memory(keys)
+    if over:
+        what, limit = over
+        raise HTTPException(429, f"{what} limit of {limit} answers reached. Try again tomorrow.")
 
 
 def _refund_quota(info: dict, ip: str) -> None:
     """The AI provider failed, so the user shouldn't lose an answer."""
+    keys = [info["sub"]] + (["ip:" + ip] if ip else [])
+    day = _today()
+    with _mem_lock:
+        for k in keys:
+            if _mem_counts.get((k, day), 0) > 0:
+                _mem_counts[(k, day)] -= 1
     try:
-        with _db_lock, _db() as (cur, ph):
-            for key in (info["sub"], "ip:" + ip if ip else None):
-                if key:
-                    cur.execute(f"UPDATE usage SET n = n - 1 WHERE sub={ph} AND day={ph} AND n > 0", (key, _today()))
+        _run_db(lambda cur, ph: cur.execute(
+            f"UPDATE usage SET n = n - 1 WHERE day={ph} AND n > 0 AND sub IN ({','.join([ph] * len(keys))})",
+            [day] + keys))
     except Exception:
         pass
+
+
+# ------------------------------------------------------------------ AI models: self-healing list
+# Free models come and go (the old default was removed and every request first failed on it). The server asks
+# OpenRouter which models exist (cached 30 min) and silently drops dead ones, ending with the auto-router.
+_models_cache: dict = {"at": 0.0, "ids": set()}
+_MODELS_TTL = 1800
+AUTO_ROUTER = "openrouter/free"
+
+
+def _live_model_ids() -> set[str]:
+    if _models_cache["ids"] and time.time() - _models_cache["at"] < _MODELS_TTL:
+        return _models_cache["ids"]
+    try:
+        data = requests.get("https://openrouter.ai/api/v1/models", timeout=8).json()["data"]
+        ids = {m["id"] for m in data if isinstance(m, dict) and "id" in m}
+        if ids:
+            _models_cache.update(at=time.time(), ids=ids)
+    except Exception:
+        _models_cache["at"] = time.time() - _MODELS_TTL + 60       # could not ask: retry in a minute, use the old list
+    return _models_cache["ids"]
+
+
+def _pick_models(preferred: list[str]) -> list[str]:
+    """Configured models that really exist right now (all of them if the list cannot be fetched), then the
+    auto-router as the last resort; at most 3 (OpenRouter's limit)."""
+    live = _live_model_ids()
+    chosen = [m for m in preferred if m and m != AUTO_ROUTER and (not live or m in live)]
+    return chosen[:2] + [AUTO_ROUTER]          # always keep the safety net; OpenRouter accepts at most 3
 
 
 def _rate_limit(sub: str) -> None:
@@ -292,16 +409,17 @@ def privacy():
 
 # ------------------------------------------------------------------ routes
 @app.get("/health")
-def health():
-    """Also reports which storage backs the daily limits (no secrets) and whether it is reachable."""
-    storage, db_ok = ("postgres" if _use_pg() else "sqlite"), True
-    try:
-        with _db() as (cur, ph):
-            cur.execute("SELECT 1")
-    except Exception as e:
-        db_ok = False
-        return {"ok": True, "storage": storage, "db_ok": db_ok, "db_error": type(e).__name__}
-    return {"ok": True, "storage": storage, "db_ok": db_ok}
+def health(deep: int = 0):
+    """Cheap by default (the app pings it to wake the server). `?deep=1` also checks the database."""
+    storage = "postgres" if _use_pg() else "sqlite"
+    out = {"ok": True, "storage": storage}
+    if deep:
+        try:
+            _run_db(lambda cur, ph: cur.execute("SELECT 1"))
+            out["db_ok"] = True
+        except Exception as e:
+            out.update(db_ok=False, db_error=type(e).__name__)
+    return out
 
 
 @app.post("/v1/chat/completions")
@@ -317,16 +435,16 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
 
     # The client never picks the model or the budget; the server does.
     cap = int(_cfg("MAX_OUTPUT_TOKENS", "5000"))
-    model = _cfg("OPENROUTER_MODEL", "inclusionai/ling-3.0-flash-fin:free")
-    fallbacks = [m.strip() for m in _cfg(
-        "OPENROUTER_FALLBACKS",
-        "inclusionai/ling-3.0-flash-sante:free,nvidia/nemotron-3-ultra-550b-a55b:free").split(",") if m.strip()]
-    models = [model, *fallbacks][:3]
+    # Defaults from `python scripts/model_check.py` (fastest models that answered every time); re-run it monthly.
+    model = _cfg("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
+    fallbacks = [m.strip() for m in _cfg("OPENROUTER_FALLBACKS", "inclusionai/ling-3.0-flash-sante:free").split(",")
+                 if m.strip()]
+    models = _pick_models([model, *fallbacks])
     if _has_images(messages):                       # the server decides from the content, not from a client flag
         vision = _cfg("VISION_MODEL", "google/gemma-4-31b-it:free")
         vfall = [m.strip() for m in _cfg("VISION_FALLBACKS", "google/gemma-4-26b-a4b-it:free,"
                                          "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free").split(",") if m.strip()]
-        models = [vision, *vfall][:3]
+        models = _pick_models([vision, *vfall])
     payload = {
         "model": models[0],
         "models": models,
@@ -344,6 +462,19 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
         raise HTTPException(502, "The AI provider is unreachable.")
     if upstream.status_code != 200:
         _refund_quota(info, ip)
+        try:
+            detail = upstream.text[:600]
+        except Exception:
+            detail = ""
+        upstream.close()
+        if upstream.status_code == 429:
+            # The whole product shares ONE OpenRouter key: 50 free-model requests/day (1000 with 10 credits).
+            if "free-models-per-day" in detail:
+                print("[server] OpenRouter free daily allowance is used up", flush=True)
+                raise HTTPException(503, "Today's shared free AI allowance is used up. It resets at 5:30 AM IST "
+                                         "(midnight UTC). Please try again then.", headers={"Retry-After": "3600"})
+            raise HTTPException(503, "The AI is busy right now. Please try again in a moment.",
+                                headers={"Retry-After": "10"})
         raise HTTPException(502 if upstream.status_code >= 500 else upstream.status_code,
                             f"AI provider error ({upstream.status_code}).")
 

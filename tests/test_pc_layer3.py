@@ -1,4 +1,4 @@
-"""PC mode, layer 3 (read inside windows) and one-click actions: permission, safety limits, protocol."""
+﻿"""PC mode, layer 3 (read inside windows) and one-click actions: permission, safety limits, protocol."""
 import pytest
 
 from consiz import llm, pc_actions, pc_mode
@@ -207,7 +207,7 @@ def test_vision_requests_use_the_image_reading_models(monkeypatch):
 
     monkeypatch.setattr(llm, "_server_url", lambda: "")
     monkeypatch.setattr(llm, "_api_key", lambda: "k")
-    monkeypatch.setattr(llm.requests, "post", lambda url, json=None, **kw: sent.update(body=json) or R())
+    monkeypatch.setattr(llm._SESSION, "post", lambda url, json=None, **kw: sent.update(body=json) or R())
     with_pic = llm.pc_messages("S", [], "q", contents="C", images=["QUJD"])
     list(llm._openrouter_sse(with_pic, llm._REASONING_OFF, 50))
     assert sent["body"]["model"] == llm.CONFIG.vision_model and "gemma" in sent["body"]["model"]
@@ -279,3 +279,4 @@ def test_second_question_about_the_same_window_reuses_the_read():
 def test_prompt_handles_tell_someone_requests():
     first = llm.pc_messages("S", [], "q")[0]["content"]
     assert "Draft:" in first and "tell Hitarth" in first and "cannot send it" in first
+
