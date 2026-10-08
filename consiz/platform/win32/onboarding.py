@@ -34,7 +34,11 @@ from consiz.platform.win32.theme import (
 from consiz import hotkeys
 from consiz.platform.win32.dpi import px
 
-WIDTH, HEIGHT = px(490), px(500)
+from consiz.platform.win32 import dpi as _dpi
+
+_AREA = _dpi.work_area_at(0, 0)
+WIDTH = min(px(490), int((_AREA[2] - _AREA[0]) * 0.9))          # 0.9: the title bar and border need room too
+HEIGHT = min(px(455), int((_AREA[3] - _AREA[1]) * 0.9))
 PAD = px(24)
 
 USER_TYPES = ["Student", "CA / Accountant / Finance", "Business owner", "Working professional", "Other"]
@@ -147,7 +151,8 @@ class OnboardingUI:
         win = tk.Toplevel(root)
         win.title("Welcome to Consiz")
         win.configure(bg=CREAM_100)
-        win.geometry(f"{WIDTH}x{HEIGHT}")
+        win.geometry(f"{WIDTH}x{HEIGHT}+{_AREA[0] + max(0, (_AREA[2] - _AREA[0] - WIDTH) // 2)}+"
+                     f"{_AREA[1] + max(0, (_AREA[3] - _AREA[1] - HEIGHT) // 3)}")        # centred on the screen, never half off it
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.protocol("WM_DELETE_WINDOW", win.withdraw)

@@ -14,6 +14,7 @@ import webbrowser
 
 from consiz import hotkeys, pause, prefs
 from consiz.config import CONFIG
+from consiz.platform.win32 import dpi
 from consiz.platform.win32.dpi import px
 from consiz.platform.win32.theme import (
     CREAM_50,
@@ -54,10 +55,14 @@ def _section(parent, text: str) -> tk.Label:
     return lbl
 
 
+_NOTES: list = []          # explanatory labels: their line length follows the width of the window (see new_tab)
+
+
 def _note(parent, text: str, wrap: int = 500) -> tk.Label:
     lbl = tk.Label(parent, text=text, font=(FONT_TEXT, 8), bg=CREAM_50, fg=INK_MUTED, anchor="w", justify="left",
                    wraplength=px(wrap))
     lbl.pack(fill="x", pady=(0, px(4)))
+    _NOTES.append(lbl)
     return lbl
 
 
@@ -123,11 +128,16 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     _OPEN["win"] = win
     win.title("Consiz Settings")
     win.configure(bg=CREAM_100)
-    win.resizable(False, False)
     win.attributes("-topmost", True)
-    width, height = px(620), px(600)
-    win.geometry(f"{width}x{height}+{max(0, (win.winfo_screenwidth() - width) // 2)}+"
-                 f"{max(0, (win.winfo_screenheight() - height) // 3)}")
+    _NOTES.clear()
+    # Open on the screen the mouse is on, never bigger than it (a 1366x768 laptop at 125 % has only ~580 px of height);
+    # the tabs scroll when there is not enough room, and the window can be resized.
+    area = dpi.work_area_at(win.winfo_pointerx(), win.winfo_pointery())
+    width, height = dpi.fit_size((px(620), px(600)), area, fraction=0.9)    # 0.9: leaves room for the title bar
+    win.geometry(f"{width}x{height}+{area[0] + max(0, (area[2] - area[0] - width) // 2)}+"
+                 f"{area[1] + max(0, (area[3] - area[1] - height) // 3)}")
+    win.minsize(min(px(460), width), min(px(340), height))
+    win.resizable(True, True)
 
     def _closed(*_):
         _OPEN["win"] = None
@@ -169,11 +179,44 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     book.pack(fill="both", expand=True, padx=px(24), pady=(0, px(4)))
 
     def new_tab(title: str) -> tk.Frame:
+        """A tab whose content scrolls (scroll bar only when needed) and re-wraps its notes to the window width."""
         outer = tk.Frame(book, bg=CREAM_50, highlightbackground=CREAM_300, highlightthickness=1)
-        inner = tk.Frame(outer, bg=CREAM_50)
-        inner.pack(fill="both", expand=True, padx=px(18), pady=(0, px(12)))
+        canvas = tk.Canvas(outer, bg=CREAM_50, highlightthickness=0, bd=0)
+        bar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        holder = tk.Frame(canvas, bg=CREAM_50)
+        holder_id = canvas.create_window((0, 0), window=holder, anchor="nw")
+        content = tk.Frame(holder, bg=CREAM_50)
+        content.pack(fill="both", expand=True, padx=px(18), pady=(0, px(12)))
+
+        def sync(_e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            if holder.winfo_reqheight() > canvas.winfo_height() > 1:
+                if not bar.winfo_ismapped():
+                    bar.pack(side="right", fill="y", before=canvas)
+            elif bar.winfo_ismapped():
+                bar.pack_forget()
+                canvas.yview_moveto(0)
+
+        def on_canvas(e):
+            canvas.itemconfigure(holder_id, width=e.width)
+            wrap = max(px(200), e.width - 2 * px(18) - px(8))
+            for note in _NOTES:
+                if str(note).startswith(str(content)):
+                    note.configure(wraplength=wrap)
+            sync()
+
+        def wheel(e):
+            if bar.winfo_ismapped():
+                canvas.yview_scroll(int(-e.delta / 120), "units")
+
+        holder.bind("<Configure>", sync)
+        canvas.bind("<Configure>", on_canvas)
+        outer.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", wheel))
+        outer.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        canvas.pack(side="left", fill="both", expand=True)
         book.add(outer, text=title)
-        return inner
+        return content
 
     # =============================================================== General
     g = new_tab("General")
@@ -326,10 +369,12 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     perm_lbl = tk.Label(p, text="", font=(FONT_TEXT, 10), bg=CREAM_50, fg=MAROON_900, anchor="w")
     perm_lbl.pack(fill="x")
 
+    _NOTES.append(perm_lbl)
+
     def refresh_perm():
         perm_lbl.config(text="Consiz may look at program names, memory use and window titles when you ask about your PC."
                         if prefs.get("pc_mode_consent") else "Not allowed yet. Consiz asks the first time you use Ask about my PC.",
-                        wraplength=px(520), justify="left")
+                        justify="left")
 
     refresh_perm()
     prow = tk.Frame(p, bg=CREAM_50)

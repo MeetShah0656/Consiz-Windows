@@ -99,3 +99,80 @@ def test_people_see_plain_words_not_internal_names():
     from consiz.models import ErrorState
     for state in ErrorState:                                    # a new error state must get a friendly title too
         assert pm._error_title(state.value) != state.value, state
+
+
+# ---------------------------------------------------------------- words appear as they are written (live line)
+def test_live_preview_hides_what_is_not_for_people():
+    from consiz.platform.win32.popup import live_preview
+    assert live_preview("- The text says") == "• The text says"
+    assert live_preview("") is None and live_preview("-") is None and live_preview("  ") is None
+    assert live_preview("KIND: EXP", hide_kind=True) is None, "the KIND: header is never shown"
+    assert live_preview("KIN", hide_kind=True) is None, "...not even while it is still being typed"
+    assert live_preview("- Fine", hide_kind=True) == "• Fine"
+    assert live_preview("ACTION: open_storage") is None and live_preview("ACT") is None
+    assert live_preview("READ: 2") is None
+    assert live_preview("Actually this is plain text") == "Actually this is plain text", "only real ACTION lines are hidden"
+    assert live_preview("**Bold** start") == "Bold start"
+
+
+def test_the_finished_line_replaces_the_half_written_one(popup):
+    pm, ui = popup
+    pm._dispatch(ui._show_at, (60, 60), "Answer", "Chrome")
+    pm._dispatch(ui._show_thinking)
+    _pump(pm, 0.3)
+    assert "thinking" in ui.chat.get("1.0", "end")
+    for partial in ("• The", "• The text says", "• The text says hello wor"):
+        pm._dispatch(ui._live, partial)
+    _pump(pm, 0.2)
+    shown = ui.chat.get("1.0", "end")
+    assert "thinking" not in shown, "the first words replace the 'thinking' line"
+    assert shown.count("hello wor") == 1 and "• The\n" not in shown, "only the newest version of the line is on screen"
+    pm._dispatch(ui._append, "• The text says hello world")
+    _pump(pm, 0.2)
+    shown = ui.chat.get("1.0", "end")
+    assert shown.count("The text says") == 1 and "hello world" in shown and "hello wor\n" not in shown
+    assert ui._msg_texts[-1] == "• The text says hello world", "Copy gets the finished line, not the half-written one"
+
+
+def test_stop_keeps_the_words_already_on_screen(popup):
+    pm, ui = popup
+    pm._dispatch(ui._show_at, (60, 60), "Answer", "Chrome")
+    pm._dispatch(ui._live, "• Half a sentence that was")
+    _pump(pm, 0.3)
+    ui._set_chat_busy(True)
+    ui._new_token()
+    ui.cancel_request()
+    shown = ui.chat.get("1.0", "end")
+    assert "Half a sentence that was" in shown and "Stopped." in shown
+    assert not ui.chat.tag_ranges("live")
+
+
+def test_a_streaming_answer_is_visible_word_by_word(popup):
+    """Look at the real chat window BETWEEN the pieces of a streamed follow-up answer."""
+    from consiz import llm
+    pm, ui = popup
+    pm._dispatch(ui._show_at, (60, 60), "Answer", "Chrome")
+    _pump(pm, 0.3)
+    seen = []
+
+    def stream():
+        yield "KIND: EXPLAIN\n"                       # never shown
+        yield "- Streaming "
+        time.sleep(0.1)
+        _pump(pm, 0.15)
+        seen.append(ui.chat.get("1.0", "end"))          # the line is incomplete here
+        yield "answers appear "
+        time.sleep(0.1)
+        _pump(pm, 0.15)
+        seen.append(ui.chat.get("1.0", "end"))
+        yield "as they are written\n"
+
+    llm.use_token(None)
+    ui.show_followup("how?", stream())
+    _pump(pm, 0.3)
+    assert "• Streaming" in seen[0] and "answers appear" not in seen[0], "first words are on screen before the line ends"
+    assert "• Streaming answers appear" in seen[1] and "as they are written" not in seen[1]
+    assert "KIND" not in seen[0] + seen[1] + ui.chat.get("1.0", "end")
+    final = ui.chat.get("1.0", "end")
+    assert final.count("Streaming answers appear as they are written") == 1
+    assert ui.history[-1]["content"].startswith("- Streaming answers appear as they are written")

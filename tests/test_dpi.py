@@ -53,4 +53,14 @@ def test_popup_and_dialog_sizes_come_from_px():
     from consiz.platform.win32 import login, onboarding, popup
     assert popup.WIDTH == dpi.px(420)
     assert (login.WIDTH, login.HEIGHT) == (dpi.px(420), dpi.px(230))
-    assert (onboarding.WIDTH, onboarding.HEIGHT) == (dpi.px(490), dpi.px(500))
+    left, top, right, bottom = dpi.work_area_at(0, 0)
+    assert onboarding.WIDTH <= dpi.px(490) and onboarding.HEIGHT <= dpi.px(455), "welcome window: compact"
+    assert onboarding.WIDTH <= right - left and onboarding.HEIGHT <= bottom - top, "...and never bigger than the screen"
+
+
+def test_fit_size_never_exceeds_the_screen_it_opens_on():
+    small = (0, 0, 1366, 728)                              # a 1366x768 laptop minus the taskbar
+    assert dpi.fit_size((775, 750), small) == (775, 669)     # too tall: shrunk to 92 % of the height
+    assert dpi.fit_size((2000, 500), small) == (1256, 500)   # too wide
+    assert dpi.fit_size((600, 400), small) == (600, 400), "a window that fits is left alone"
+    assert dpi.fit_size((600, 400), (-1920, 0, 0, 1040)) == (600, 400), "a monitor to the left works too"

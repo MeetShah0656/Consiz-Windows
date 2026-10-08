@@ -85,6 +85,13 @@ def work_area_at(x: int, y: int) -> tuple[int, int, int, int]:
     return 0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)       # fall back to the primary screen
 
 
+def fit_size(size: tuple[int, int], area: tuple[int, int, int, int], fraction: float = 0.92) -> tuple[int, int]:
+    """A window size that fits the screen it opens on: never more than `fraction` of the usable width/height."""
+    w, h = size
+    left, top, right, bottom = area
+    return min(w, int((right - left) * fraction)), min(h, int((bottom - top) * fraction))
+
+
 def place_near(point: tuple[int, int], size: tuple[int, int], area: tuple[int, int, int, int],
                gap: int = 15, margin: int = 10) -> tuple[int, int]:
     """Top-left for a window of `size` just below-right of `point`, kept fully inside `area`

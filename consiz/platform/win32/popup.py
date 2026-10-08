@@ -159,6 +159,7 @@ class PopupUI:
         self.last_answer = ""
         self.history: list[dict] = []          # follow-up turns: [{"role","content"}, ...]
         self._msg_texts: list[str] = []        # plain text per assistant message (for per-message Copy)
+        self._bubbles: list[tk.Label] = []     # the user's speech bubbles: they re-wrap when the window is resized
         self._transcript: list[list[str]] = []  # [who, text] in order (for Copy all)
         self._ai_open = False
         self._ai_text: list[str] = []
@@ -263,6 +264,7 @@ class PopupUI:
         chat.config(yscrollcommand=scrollbar.set)
         chat.pack(side="left", fill="both", expand=True)
         chat.bind("<MouseWheel>", lambda e: chat.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        chat.bind("<Configure>", lambda e: self._rewrap_bubbles(e.width))
 
         chat.tag_configure("who_ai", font=(FONT_TEXT, 8, "bold"), foreground=INK_MUTED, spacing1=8)
         chat.tag_configure("who_user", font=(FONT_TEXT, 8, "bold"), foreground=INK_MUTED, justify="right",
@@ -336,8 +338,9 @@ class PopupUI:
             self._win_w, self._win_h = win.winfo_width(), win.winfo_height()
 
         def do_resize(e):
-            nw = max(dpi.px(320), self._win_w + e.x_root - self._start_x)
-            nh = max(dpi.px(260), self._win_h + e.y_root - self._start_y)
+            left, top, right, bottom = self._area()
+            nw = min(max(dpi.px(320), self._win_w + e.x_root - self._start_x), right - left - 20)
+            nh = min(max(dpi.px(260), self._win_h + e.y_root - self._start_y), bottom - top - 20)
             self.user_size = (nw, nh)
             win.geometry(f"{nw}x{nh}")
 
@@ -408,11 +411,37 @@ class PopupUI:
     def _scroll_end(self) -> None:
         self.chat.see("end")
 
+    def _live(self, text: str) -> None:
+        """Show the line the AI is writing RIGHT NOW (UI thread). It is replaced by the finished line when its end
+        arrives, so words appear as they are generated instead of a whole line at a time."""
+        self._hide_thinking()
+        if not self._ai_open:
+            self._begin_ai()
+        self.chat.config(state="normal")
+        rng = self.chat.tag_ranges("live")
+        if rng:
+            self.chat.delete(rng[0], rng[1])
+        self.chat.insert("end", text, ("ai", "live"))
+        self.chat.config(state="disabled")
+        self._scroll_end()
+
+    def _clear_live(self) -> str:
+        """Remove the half-written line; returns its text."""
+        rng = self.chat.tag_ranges("live")
+        if not rng:
+            return ""
+        self.chat.config(state="normal")
+        text = self.chat.get(rng[0], rng[1])
+        self.chat.delete(rng[0], rng[1])
+        self.chat.config(state="disabled")
+        return text
+
     def _clear_chat(self) -> None:
         self.chat.config(state="normal")
         self.chat.delete("1.0", "end")
         self.chat.config(state="disabled")
         self._lines.clear()
+        self._bubbles.clear()
         self._ai_open = False
         self._ai_text = []
         self._thinking = False
@@ -456,6 +485,7 @@ class PopupUI:
                           anchor="w", wraplength=max(dpi.px(180), int((self.window.winfo_width() or WIDTH) * 0.68)),
                           padx=11, pady=6)
         self.chat.window_create("end", window=bubble, padx=2, pady=2)
+        self._bubbles.append(bubble)
         self.chat.insert("end", "\n")
         self.chat.tag_add("user_row", "end-2c linestart", "end-1c")
         self.chat.config(state="disabled")
@@ -463,6 +493,16 @@ class PopupUI:
         self._ai_open = False
         self._scroll_end()
         self._fit_height()
+
+    def _rewrap_bubbles(self, chat_width: int) -> None:
+        """A bubble is as wide as its text up to 68 % of the chat; follow the window when it is resized."""
+        wrap = max(dpi.px(180), int(chat_width * 0.68))
+        for b in self._bubbles:
+            try:
+                if int(b.cget("wraplength")) != wrap:
+                    b.configure(wraplength=wrap)
+            except tk.TclError:
+                pass
 
     def _show_thinking(self) -> None:
         if self._thinking:
@@ -519,6 +559,9 @@ class PopupUI:
         if tok is not None:
             tok.cancel()
         self._hide_thinking()
+        partial = self._clear_live()                       # keep the half-written line that was already on screen
+        if partial.strip():
+            self._append(partial)
         self._set_chat_busy(False)
         if say:
             self._log("\nStopped.\n", "ai_dim")
@@ -665,6 +708,7 @@ class PopupUI:
         area = dpi.work_area_at(*point)                    # the monitor the user is looking at, not just the main one
         w = self.user_size[0] if self.user_size else WIDTH
         h = self._compute_height(area)
+        w, h = dpi.fit_size((w, h), area)                  # a small laptop screen never gets a window bigger than itself
         x, y = dpi.place_near(point, (w, h), area, gap=dpi.px(15))
         self.window.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -679,6 +723,7 @@ class PopupUI:
 
     def _append(self, line: str, dim: bool = False) -> None:
         self._hide_thinking()
+        self._clear_live()                                 # the finished line replaces the half-written one
         if not self._ai_open:
             self._begin_ai()
         self._lines.append(line)
@@ -897,11 +942,14 @@ class PopupUI:
             post(self._set_chat_busy, True)                # the Send button becomes Stop while the answer streams
             if res.body and not deferred:
                 post(self._append, "")
+            if not deferred:
+                post(self._show_thinking)                  # something is happening while the first words are being made
             elif res.body:
                 held.append(("", False))
 
             title_done = res.title != "auto"
             buf = ""
+            last_live = 0.0
 
             def emit(line: str):
                 if deferred:
@@ -928,6 +976,12 @@ class PopupUI:
                             default_title = "Web Context" if res.source_app.startswith("🌐") else "Result"
                             post(self._set_title, default_title)
                         emit(_pretty_line(done))
+                    now = time.monotonic()
+                    if not deferred and buf.strip() and now - last_live >= LIVE_EVERY_SECONDS:
+                        shown = live_preview(buf, hide_kind=not title_done)
+                        if shown is not None:
+                            last_live = now
+                            post(self._live, shown)
                 if buf.strip():
                     emit(_pretty_line(buf))
             except Cancelled:
@@ -975,6 +1029,7 @@ class PopupUI:
         collected: list[str] = []
         buf = ""
         first_line = True
+        last_live = 0.0
 
         from consiz import pc_actions, pc_mode
         actions: list = []
@@ -1008,6 +1063,12 @@ class PopupUI:
                         if done.strip().strip("*`#_ ").upper().startswith("KIND"):
                             continue
                     emit(done)
+                now = time.monotonic()
+                if buf.strip() and now - last_live >= LIVE_EVERY_SECONDS:
+                    shown = live_preview(buf, hide_kind=first_line)
+                    if shown is not None:
+                        last_live = now
+                        post(self._live, shown)
             if buf.strip() and not (first_line and buf.strip().strip("*`#_ ").upper().startswith("KIND")):
                 emit(buf)
         except Cancelled:
@@ -1067,6 +1128,23 @@ class PopupUI:
         self.chat.delete(rng[0], rng[1])
         self.chat.insert(start, new_text + chr(10), (style, tag))
         self.chat.config(state="disabled")
+
+
+LIVE_EVERY_SECONDS = 0.06          # the line being written is refreshed at most ~16 times a second
+
+
+def live_preview(partial: str, hide_kind: bool = False) -> str | None:
+    """What to show for a line the AI is still writing, or None to show nothing yet. The 'KIND:' header and the
+    READ:/ACTION: lines are instructions for the program, not text for a person: they are never previewed."""
+    s = partial.strip()
+    if len(s) < 2:                                       # a lone '-' or '•' would flicker
+        return None
+    head = s.strip("*`#_ ").upper()
+    if hide_kind and (len(head) < 5 or head.startswith("KIND")):
+        return None
+    if head.startswith(("ACTION", "READ")) or (len(head) < 6 and ("ACTION".startswith(head) or "READ".startswith(head))):
+        return None
+    return _pretty_line(partial)
 
 
 _TYPE_LABELS = {"TEXT_SELECTION": "Selected text", "QUESTION": "Question", "FILE": "File", "FOLDER": "Folder",

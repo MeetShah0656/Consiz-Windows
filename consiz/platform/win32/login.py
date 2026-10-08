@@ -5,6 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from consiz import auth
+from consiz.platform.win32 import dpi
 from consiz.platform.win32.dpi import px
 from consiz.platform.win32.popup import _dispatch, _get_root
 from consiz.platform.win32.theme import (
@@ -27,7 +28,9 @@ class LoginUI:
         win = tk.Toplevel(_get_root())
         win.title("Sign in to Conciz")
         win.configure(bg=CREAM_100)
-        win.geometry(f"{WIDTH}x{HEIGHT}")
+        area = dpi.work_area_at(0, 0)
+        win.geometry(f"{WIDTH}x{HEIGHT}+{area[0] + max(0, (area[2] - area[0] - WIDTH) // 2)}+"
+                     f"{area[1] + max(0, (area[3] - area[1] - HEIGHT) // 3)}")           # centred on the screen
         win.resizable(False, False)
         win.attributes("-topmost", True)
         win.protocol("WM_DELETE_WINDOW", win.withdraw)
