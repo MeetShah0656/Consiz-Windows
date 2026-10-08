@@ -19,6 +19,8 @@ except ImportError:
     Image = None
     ImageDraw = None
 
+from consiz import pause
+
 RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "Consiz"
 
@@ -76,6 +78,16 @@ def _create_default_icon_image() -> Image.Image:
     return img
 
 
+def paused_icon_image(base: "Image.Image") -> "Image.Image":
+    """The normal icon in grey with a pause sign, so a paused Consiz is obvious in the tray."""
+    img = base.convert("RGBA").resize((64, 64)).convert("LA").convert("RGBA")
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([34, 34, 62, 62], radius=6, fill=(97, 30, 41, 255), outline=(255, 252, 246, 255), width=2)
+    draw.rectangle([41, 40, 45, 56], fill=(255, 252, 246, 255))
+    draw.rectangle([51, 40, 55, 56], fill=(255, 252, 246, 255))
+    return img
+
+
 def get_icon_image() -> Image.Image:
     """Retrieve icon from disk/bundle or generate fallback."""
     candidate_paths = []
@@ -126,6 +138,22 @@ class SystemTray:
     def _toggle_autostart(self, icon, item):
         new_state = not is_autostart_enabled()
         set_autostart_enabled(new_state)
+
+    def _toggle_pause(self, icon, item):
+        pause.toggle()
+
+    def _on_pause_changed(self, paused: bool) -> None:
+        """Grey icon + tooltip while paused; the menu text flips between Pause and Resume."""
+        if not self.icon:
+            return
+        try:
+            self.icon.icon = self._paused_image if paused else self._normal_image
+            self.icon.title = "Consiz - paused" if paused else "Consiz — AI Context & Dictation"
+            self.icon.update_menu()
+            self.icon.notify("Consiz is paused. It will not touch your mouse or keyboard." if paused
+                             else "Consiz is active again.", "Consiz")
+        except Exception:
+            pass
 
     def _trigger_explain(self, icon, item):
         if self.on_explain:
@@ -248,7 +276,8 @@ class SystemTray:
             return Menu(*[Item(labels[m], choose(m), checked=is_on(m), radio=True) for m in MODES])
 
         menu = Menu(
-            Item("⚡ Consiz is active", None, enabled=False),
+            Item(lambda item: "⏸ Consiz is paused" if pause.is_paused() else "⚡ Consiz is active", None, enabled=False),
+            Item(lambda item: "▶ Resume Consiz" if pause.is_paused() else "⏸ Pause Consiz", self._toggle_pause),
             Item("Explain Selection (Ctrl+Alt+S)", self._trigger_explain),
             *([Item("Ask about my PC (Ctrl+Alt+A)", self._trigger_pc)] if self.on_pc else []),
             Item("Voice Dictate (Ctrl+Alt+D)", self._trigger_dictate),
@@ -273,7 +302,9 @@ class SystemTray:
 
 
         image = get_icon_image()
+        self._normal_image, self._paused_image = image, paused_icon_image(image)
         self.icon = pystray.Icon("Consiz", image, "Consiz — AI Context & Dictation", menu)
+        pause.on_change(self._on_pause_changed)
         
         # Run detached in background thread
         def _ready(icon):

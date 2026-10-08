@@ -16,7 +16,7 @@ from typing import Callable
 
 from consiz.config import CONFIG
 from consiz.dictation import AudioRecorder, get_dictation_engine
-from consiz.llm import KIND_TITLES, LLMError, SignInRequired
+from consiz.llm import KIND_TITLES, Cancelled, CancelToken, LLMError, SignInRequired, current_token, use_token
 from consiz.models import CapturedContext, CaptureMethod, Result
 from consiz.output import _pretty_line
 from consiz.platform.win32.theme import (
@@ -161,6 +161,7 @@ class PopupUI:
         self._ai_text: list[str] = []
         self._thinking = False
         self._chat_busy = False
+        self._token: CancelToken | None = None   # the request in flight; Stop / close / new chat cancel it
         self._action_n = 0
         self._minimized = False
         self._pc_note = ""
@@ -239,9 +240,9 @@ class PopupUI:
         send_btn = tk.Label(input_row, text="Send ➤", font=(FONT_TEXT, 9, "bold"), fg=CREAM_50, bg=MAROON_700,
                             padx=12, pady=7, cursor="hand2")
         send_btn.pack(side="right", padx=(6, 0), fill="y")
-        send_btn.bind("<Button-1>", lambda e: self._submit())
-        send_btn.bind("<Enter>", lambda e: send_btn.config(bg=MAROON_600))
-        send_btn.bind("<Leave>", lambda e: send_btn.config(bg=MAROON_700 if not self._chat_busy else INK_MUTED))
+        send_btn.bind("<Button-1>", lambda e: self._send_or_stop())
+        send_btn.bind("<Enter>", lambda e: send_btn.config(bg=MAROON_600 if not self._chat_busy else MAROON_800))
+        send_btn.bind("<Leave>", lambda e: send_btn.config(bg=MAROON_700 if not self._chat_busy else MAROON_900))
 
         entry = tk.Text(input_row, font=(FONT_TEXT, 10), fg=MAROON_900, bg=card_bg, insertbackground=MAROON_900,
                         relief="flat", height=1, wrap="word", padx=8, pady=6, highlightthickness=1,
@@ -479,8 +480,51 @@ class PopupUI:
         self.chat.config(state="disabled")
 
     def _set_chat_busy(self, busy: bool) -> None:
+        """While an answer is coming the Send button becomes Stop (T-05)."""
         self._chat_busy = busy
-        self.send_btn.config(bg=INK_MUTED if busy else MAROON_700, text="…" if busy else "Send ➤")
+        self.send_btn.config(bg=MAROON_900 if busy else MAROON_700, text="■ Stop" if busy else "Send ➤")
+
+    # ------------------------------------------------------------------ Stop / cancel (T-05)
+    def _new_token(self) -> CancelToken:
+        """A new request replaces (and cancels) any request still in flight. Safe from any thread."""
+        tok = CancelToken()
+        old, self._token = self._token, tok
+        if old is not None:
+            old.cancel()
+        return tok
+
+    def _if_live(self, tok: CancelToken | None, fn, args) -> None:
+        if tok is None or not tok.cancelled:                # late text from a stopped answer is dropped
+            fn(*args)
+
+    def _post(self, tok: CancelToken | None, fn, *args) -> None:
+        """Queue fn for the UI thread, unless the request was stopped by then."""
+        _dispatch(self._if_live, tok, fn, args)
+
+    def _end_run(self, tok: CancelToken) -> None:
+        if tok is self._token:
+            self._token = None
+            self._set_chat_busy(False)
+
+    def cancel_request(self, say: bool = True) -> None:
+        """Stop the answer that is streaming now (UI thread): the connection is closed, the server stops, and
+        nothing more is written to the chat."""
+        tok, self._token = self._token, None
+        if tok is None and not self._chat_busy:
+            return
+        if tok is not None:
+            tok.cancel()
+        self._hide_thinking()
+        self._set_chat_busy(False)
+        if say:
+            self._log("\nStopped.\n", "ai_dim")
+            self._scroll_end()
+
+    def _send_or_stop(self) -> None:
+        if self._chat_busy:
+            self.cancel_request()
+        else:
+            self._submit()
 
     def _submit(self) -> None:
         if self._chat_busy or self._placeholder_on or self.on_ask is None:
@@ -493,20 +537,26 @@ class PopupUI:
         self._add_user(q)
         self._show_thinking()
         self._set_chat_busy(True)
-        threading.Thread(target=self._run_ask, args=(q,), daemon=True).start()
+        tok = self._new_token()
+        threading.Thread(target=self._run_ask, args=(q, tok), daemon=True).start()
 
-    def _run_ask(self, q: str) -> None:
+    def _run_ask(self, q: str, tok: CancelToken) -> None:
+        use_token(tok)                                     # every AI call this worker makes can now be stopped
         try:
             self.on_ask(q)
+        except Cancelled:
+            pass
         except Exception as e:
-            _dispatch(self._hide_thinking)
-            _dispatch(self._append, f"⚠ {_friendly_error(str(e))}")
+            if not tok.cancelled:
+                _dispatch(self._hide_thinking)
+                _dispatch(self._append, f"⚠ {_friendly_error(str(e))}")
         finally:
-            _dispatch(self._set_chat_busy, False)
+            _dispatch(self._end_run, tok)
 
     def new_chat(self) -> None:
         if self.window is None:
             return
+        self.cancel_request(say=False)
         self._clear_chat()
         self.history.clear()
         self.last_answer = ""
@@ -729,6 +779,7 @@ class PopupUI:
 
     def hide(self) -> None:
         def _do_hide():
+            self.cancel_request(say=False)                 # closing the window stops the answer (and the bill)
             if self._is_dictating:
                 self._is_dictating = False
                 self._recorder.cancel()
@@ -780,12 +831,25 @@ class PopupUI:
         point = at or _get_cursor_pos()
         self.mode = "selection"
         self.context = res.source_content or res.body
+        tok = self._new_token()                            # Stop / close cancels everything below
+        use_token(tok)
+        try:
+            self._render_result(res, point, tok)
+        except Cancelled:
+            pass
+        finally:
+            _dispatch(self._end_run, tok)
+
+    def _render_result(self, res: Result, point, tok: CancelToken) -> None:
+        def post(fn, *args):
+            self._post(tok, fn, *args)
+
         t0 = res.started_at or time.perf_counter()
 
         if res.error:
             _dispatch(self._show_at, point, res.title, res.source_app)
             for ln in res.body.splitlines():
-                _dispatch(self._append, ln)
+                post(self._append, ln)
             return
 
         deferred = res.content_type.startswith(("FILE", "FOLDER", "CSV_DATA")) and res.stream is not None
@@ -795,16 +859,17 @@ class PopupUI:
 
         held: list[tuple[str, bool]] = [(_pretty_line(ln), True) for ln in res.body.splitlines()]
         if deferred:
-            _dispatch(self._append, "Processing…", True)
+            post(self._append, "Processing…", True)
         else:
             for ln, dim in held:
-                _dispatch(self._append, ln, dim)
+                post(self._append, ln, dim)
 
         collected: list[str] = []
         failed = False
         if res.stream is not None:
+            post(self._set_chat_busy, True)                # the Send button becomes Stop while the answer streams
             if res.body and not deferred:
-                _dispatch(self._append, "")
+                post(self._append, "")
             elif res.body:
                 held.append(("", False))
 
@@ -815,10 +880,11 @@ class PopupUI:
                 if deferred:
                     held.append((line, False))
                 else:
-                    _dispatch(self._append, line)
+                    post(self._append, line)
 
             try:
                 for piece in res.stream:
+                    tok.check()
                     collected.append(piece)
                     buf += piece
                     while "\n" in buf:
@@ -830,13 +896,15 @@ class PopupUI:
                             k = done.strip().strip("*`#_ ").upper()
                             if k.startswith("KIND"):
                                 kind = k.removeprefix("KIND").strip(":*` _")
-                                _dispatch(self._set_title, KIND_TITLES.get(kind, "Result"))
+                                post(self._set_title, KIND_TITLES.get(kind, "Result"))
                                 continue
                             default_title = "Web Context" if res.source_app.startswith("🌐") else "Result"
-                            _dispatch(self._set_title, default_title)
+                            post(self._set_title, default_title)
                         emit(_pretty_line(done))
                 if buf.strip():
                     emit(_pretty_line(buf))
+            except Cancelled:
+                raise
             except LLMError as e:
                 failed = True
                 if isinstance(e, SignInRequired):
@@ -845,6 +913,8 @@ class PopupUI:
                 else:
                     emit(_friendly_error(str(e)))
                     emit(f"({e})")
+            finally:
+                _close_stream(res.stream)
 
         text = "".join(collected)
         if text.upper().startswith("KIND"):
@@ -854,12 +924,12 @@ class PopupUI:
             if deferred:
                 held.append((f"⚠ {w}", True))
             else:
-                _dispatch(self._append, f"⚠ {w}", True)
+                post(self._append, f"⚠ {w}", True)
         if deferred:
-            _dispatch(self._set_lines, held)
+            post(self._set_lines, held)
 
         self.last_answer = text or res.body
-        _dispatch(self._set_meta, f"{res.content_type} · {res.source_app} · {time.perf_counter() - t0:.1f}s")
+        post(self._set_meta, f"{res.content_type} · {res.source_app} · {time.perf_counter() - t0:.1f}s")
 
     def _need_login(self) -> None:
         """Sign-in expired or was rejected mid-session: reopen the login window (set by main.py)."""
@@ -868,12 +938,16 @@ class PopupUI:
 
     def show_followup(self, question: str, stream) -> None:
         """Stream the answer to a follow-up into the SAME chat window (worker thread)."""
+        tok = current_token()                              # set by _run_ask: Stop / close cancels this answer
         collected: list[str] = []
         buf = ""
         first_line = True
 
         from consiz import pc_actions, pc_mode
         actions: list = []
+
+        def post(fn, *args):
+            self._post(tok, fn, *args)
 
         def emit(line: str) -> None:
             if self.mode == "pc" and pc_actions.is_action_line(line):
@@ -882,12 +956,14 @@ class PopupUI:
                     act = pc_actions.parse(line, pc_mode.last_windows())
                     if act is not None:
                         actions.append(act)
-                        _dispatch(self._add_action, act)
+                        post(self._add_action, act)
                 return
-            _dispatch(self._append, _pretty_line(line))
+            post(self._append, _pretty_line(line))
 
         try:
             for piece in stream:
+                if tok is not None:
+                    tok.check()
                 collected.append(piece)
                 buf += piece
                 while "\n" in buf:
@@ -901,20 +977,24 @@ class PopupUI:
                     emit(done)
             if buf.strip() and not (first_line and buf.strip().strip("*`#_ ").upper().startswith("KIND")):
                 emit(buf)
+        except Cancelled:
+            return                                         # stopped by the user: nothing to show, nothing to remember
         except LLMError as e:
             if isinstance(e, SignInRequired):
-                _dispatch(self._append, "⚠ Please sign in again to continue.")
+                post(self._append, "⚠ Please sign in again to continue.")
                 self._need_login()
             else:
-                _dispatch(self._append, "⚠ " + _friendly_error(str(e)))
-                _dispatch(self._append, f"({e})", True)
+                post(self._append, "⚠ " + _friendly_error(str(e)))
+                post(self._append, f"({e})", True)
             return
+        finally:
+            _close_stream(stream)
         text = "".join(collected)
         if text.upper().lstrip("*`#_ ").startswith("KIND"):
             text = text.split("\n", 1)[1] if "\n" in text else ""
         text = "\n".join(ln for ln in text.splitlines() if not pc_actions.is_action_line(ln))
         if not text.strip() and not actions:
-            _dispatch(self._append, "⚠ The AI sent an empty answer. Try asking again.")
+            post(self._append, "⚠ The AI sent an empty answer. Try asking again.")
             return
         self.history.append({"role": "user", "content": question})
         self.history.append({"role": "assistant", "content": text.strip() or "(suggested an action)"})
@@ -951,6 +1031,16 @@ class PopupUI:
         self.chat.delete(rng[0], rng[1])
         self.chat.insert(start, new_text + chr(10), (style, tag))
         self.chat.config(state="disabled")
+
+
+def _close_stream(stream) -> None:
+    """Close a generator early so its HTTP connection is released at once."""
+    close = getattr(stream, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
 
 
 def _friendly_error(detail: str) -> str:

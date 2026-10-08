@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Iterator
 
@@ -45,6 +46,74 @@ class LLMError(Exception):
 
 class SignInRequired(LLMError):
     """The Google sign-in is missing, expired or rejected — the UI should reopen the login window."""
+
+
+class LLMUnavailable(LLMError):
+    """The server or AI could not be reached, timed out, or is overloaded (not the user's fault, not a rule).
+    This is the only kind of failure the offline fallback may answer instead."""
+
+
+class Cancelled(LLMError):
+    """The user pressed Stop or closed the window. Not an error: callers show nothing."""
+
+
+class CancelToken:
+    """One per request, made on the UI thread. cancel() stops the worker at once: it closes any open HTTP stream
+    (which also makes the server stop paying for the answer) and every later step raises Cancelled."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._open: set = set()
+        self._lock = threading.Lock()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def wait(self, seconds: float) -> None:
+        """Sleep, but wake at once when cancelled; raises Cancelled in that case."""
+        if self._event.wait(seconds):
+            raise Cancelled()
+
+    def check(self) -> None:
+        if self._event.is_set():
+            raise Cancelled()
+
+    def add(self, response) -> None:
+        with self._lock:
+            self._open.add(response)
+        if self._event.is_set():
+            self._close(response)
+
+    def drop(self, response) -> None:
+        with self._lock:
+            self._open.discard(response)
+
+    @staticmethod
+    def _close(response) -> None:
+        try:
+            response.close()
+        except Exception:
+            pass
+
+    def cancel(self) -> None:
+        self._event.set()
+        with self._lock:
+            open_now = list(self._open)
+        for r in open_now:
+            self._close(r)
+
+
+_LOCAL = threading.local()
+
+
+def use_token(token: "CancelToken | None") -> None:
+    """Bind a cancel token to THIS thread: every AI call the thread makes from now on can be stopped by it."""
+    _LOCAL.token = token
+
+
+def current_token() -> "CancelToken | None":
+    return getattr(_LOCAL, "token", None)
 
 
 _SYSTEM = (
@@ -339,54 +408,75 @@ def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> I
     on_server = bool(_server_url())
     read_timeout = max(CONFIG.llm_timeout_s, 100.0) if on_server else CONFIG.llm_timeout_s
     attempts = 3 if on_server else 1
+    tok = current_token()
     try:
         for attempt in range(attempts):
+            if tok:
+                tok.check()
             last = attempt + 1 == attempts
             try:
                 with _SESSION.post(f"{_base_url()}/chat/completions", headers=headers, json=body,
                                    stream=True, timeout=(15 if on_server else 10, read_timeout)) as r:
-                    if r.status_code in (502, 503, 504) and not last:
-                        time.sleep(6)
-                        continue
-                    if r.status_code == 401 and on_server:
-                        from . import auth
-                        auth.sign_out()               # the server rejected our token: it is no longer valid
-                        raise SignInRequired("Your sign-in expired. Please sign in again.")
-                    if r.status_code != 200:
-                        raise LLMError(_http_error(r))
-                    finish = None
-                    for raw in r.iter_lines():
-                        if not raw:
+                    if tok:
+                        tok.add(r)
+                    try:
+                        if r.status_code in (502, 503, 504) and not last:
+                            tok.wait(6) if tok else time.sleep(6)
                             continue
-                        line = raw.decode("utf-8", "ignore")
-                        if not line.startswith("data:"):
-                            continue          # SSE comments / keep-alives
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        if "error" in obj:
-                            raise LLMError(f"OpenRouter: {obj['error'].get('message', obj['error'])}")
-                        for choice in obj.get("choices", []):
-                            piece = (choice.get("delta") or {}).get("content")
-                            finish = choice.get("finish_reason") or finish
-                            if piece:
-                                yield piece, None
-                    yield None, finish
-                    return
+                        if r.status_code == 401 and on_server:
+                            from . import auth
+                            auth.sign_out()               # the server rejected our token: it is no longer valid
+                            raise SignInRequired("Your sign-in expired. Please sign in again.")
+                        if r.status_code != 200:
+                            raise (LLMUnavailable if r.status_code >= 500 else LLMError)(_http_error(r))
+                        finish = None
+                        for raw in r.iter_lines():
+                            if tok:
+                                tok.check()
+                            if not raw:
+                                continue
+                            line = raw.decode("utf-8", "ignore")
+                            if not line.startswith("data:"):
+                                continue          # SSE comments / keep-alives
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                obj = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            if "error" in obj:
+                                raise LLMError(f"OpenRouter: {obj['error'].get('message', obj['error'])}")
+                            for choice in obj.get("choices", []):
+                                piece = (choice.get("delta") or {}).get("content")
+                                finish = choice.get("finish_reason") or finish
+                                if piece:
+                                    yield piece, None
+                        yield None, finish
+                        return
+                    finally:
+                        if tok:
+                            tok.drop(r)
             except (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout):
+                if tok and tok.cancelled:
+                    raise Cancelled() from None
                 if last:
                     raise
-                time.sleep(6)
+                tok.wait(6) if tok else time.sleep(6)
     except LLMError:
         raise
     except requests.exceptions.Timeout as e:
-        raise LLMError(f"OpenRouter timed out after {read_timeout:.0f}s") from e
+        if tok and tok.cancelled:
+            raise Cancelled() from None
+        raise LLMUnavailable(f"OpenRouter timed out after {read_timeout:.0f}s") from e
     except requests.exceptions.RequestException as e:
-        raise LLMError(f"OpenRouter unreachable: {type(e).__name__}: {e}") from e
+        if tok and tok.cancelled:                 # we closed the stream ourselves
+            raise Cancelled() from None
+        raise LLMUnavailable(f"OpenRouter unreachable: {type(e).__name__}: {e}") from e
+    except Exception:
+        if tok and tok.cancelled:                 # closing a stream mid-read can surface as many error types
+            raise Cancelled() from None
+        raise
 
 
 def _stream_openrouter_messages(messages: list[dict]) -> Iterator[str]:

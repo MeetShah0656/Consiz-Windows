@@ -17,7 +17,7 @@ from typing import Callable
 import psutil
 from pynput import keyboard
 
-from consiz import prefs
+from consiz import pause, prefs
 from consiz.config import CONFIG
 from consiz.platform.win32 import mousegate
 from consiz.platform.win32.priority import set_high_priority, set_thread_high_priority
@@ -36,6 +36,7 @@ VK_CONTROL = 0x11
 OWN_EVENT = 0x434F4E53          # "CONS": marks clicks Consiz re-sends, so its own hook ignores them
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
+WM_PAUSE_CHANGED = 0x8001      # WM_APP + 1: wakes the message pump so hotkeys are released/re-taken at once
 
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
@@ -74,6 +75,8 @@ user32.UnregisterHotKey.restype = wintypes.BOOL
 user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
 user32.mouse_event.restype = None
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostThreadMessageW.restype = wintypes.BOOL
 user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
 user32.GetAsyncKeyState.restype = ctypes.c_short
 
@@ -141,7 +144,10 @@ class Trigger:
         self._last_middle_click_time = 0.0
         self._gate = mousegate.MiddleGate()
         self._fg_names: dict[int, str] = {}
+        self._hotkey_defs: list[tuple[int, str, str, str]] = []     # (id, name, hotkey text, what it fires)
+        self._hotkeys_on = False
         self._load_gate_settings()
+        pause.on_change(lambda _p: self._wake_pump())
 
     # ------------------------------------------------------------------ settings (re-read every few seconds)
     def _load_gate_settings(self) -> None:
@@ -158,8 +164,40 @@ class Trigger:
             user32.UnhookWindowsHookEx(self._mouse_hook)
             self._mouse_hook = None
 
+    # ------------------------------------------------------------------ pause (T-10)
+    def _mouse_paused(self) -> bool:
+        """Paused by the user, or (setting, on by default) a full-screen app is in front."""
+        if pause.is_paused():
+            return True
+        if prefs.get("pause_in_fullscreen", True):
+            from consiz.platform.win32.fullscreen import foreground_is_fullscreen
+            return foreground_is_fullscreen()
+        return False
+
+    def _wake_pump(self) -> None:
+        if self._hook_tid:
+            user32.PostThreadMessageW(self._hook_tid, WM_PAUSE_CHANGED, 0, 0)
+
+    def _sync_hotkeys(self) -> None:
+        """Runs on the pump thread (RegisterHotKey belongs to the thread that made it). Paused = keys are released,
+        so the app in front gets Ctrl+Alt+S / Ctrl+Alt+A itself."""
+        want = not pause.is_paused()
+        if want == self._hotkeys_on:
+            return
+        for hk_id, name, text, _what in self._hotkey_defs:
+            if want:
+                parsed = parse_hotkey_to_win32(text)
+                if parsed and user32.RegisterHotKey(None, hk_id, parsed[0], parsed[1]):
+                    self._native_registered.add(name)
+            elif name in self._native_registered:
+                user32.UnregisterHotKey(None, hk_id)
+                self._native_registered.discard(name)
+        self._hotkeys_on = want
+
     # ------------------------------------------------------------------ firing
     def _fire(self, source: str) -> None:
+        if pause.is_paused() and source != "tray":
+            return
         if not self._busy.acquire(blocking=False):
             if self._on_busy:
                 self._on_busy()
@@ -203,7 +241,7 @@ class Trigger:
             return ""
 
     def _fire_dictate(self, source: str) -> None:
-        if self._on_dictate is None:
+        if self._on_dictate is None or pause.is_paused():
             return
         if not self._busy.acquire(blocking=False):
             if self._on_busy:
@@ -219,7 +257,7 @@ class Trigger:
         threading.Thread(target=run, name="consiz-dictate-worker", daemon=True).start()
 
     def _fire_pc(self, source: str) -> None:
-        if self._on_pc is None:
+        if self._on_pc is None or pause.is_paused():
             return
         # Opening the PC chat is quick; the slow snapshot runs later on the ask worker, so no busy lock here.
         threading.Thread(target=self._on_pc, args=(source,), name="consiz-pc-worker", daemon=True).start()
@@ -236,7 +274,7 @@ class Trigger:
                 now = time.time()
                 if wParam == WM_MBUTTONDOWN:
                     ctrl = bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
-                    act = self._gate.down(info.pt.x, info.pt.y, ctrl, self._foreground_app(), now)
+                    act = self._gate.down(info.pt.x, info.pt.y, ctrl, self._foreground_app(), now, self._mouse_paused())
                 elif wParam == WM_MOUSEMOVE:
                     act = self._gate.move(info.pt.x, info.pt.y, now)
                 elif wParam == WM_MBUTTONUP:
@@ -275,26 +313,14 @@ class Trigger:
         set_thread_high_priority()
         self._hook_tid = kernel32.GetCurrentThreadId()
 
-        # 1. Register Kernel HotKeys dynamically from CONFIG
-        parsed_hk = parse_hotkey_to_win32(CONFIG.hotkey)
-        if parsed_hk:
-            mods, vk = parsed_hk
-            if user32.RegisterHotKey(None, HOTKEY_ID, mods, vk):
-                self._native_registered.add("hotkey")
-
-        dictate_hk_str = getattr(CONFIG, "dictate_hotkey", "")
-        if self._on_dictate and dictate_hk_str:
-            parsed_d = parse_hotkey_to_win32(dictate_hk_str)
-            if parsed_d:
-                mods_d, vk_d = parsed_d
-                if user32.RegisterHotKey(None, HOTKEY_DICTATE_ID, mods_d, vk_d):
-                    self._native_registered.add("dictate")
-
-        pc_hk_str = getattr(CONFIG, "pc_hotkey", "")
-        if self._on_pc and pc_hk_str:
-            parsed_p = parse_hotkey_to_win32(pc_hk_str)
-            if parsed_p and user32.RegisterHotKey(None, HOTKEY_PC_ID, parsed_p[0], parsed_p[1]):
-                self._native_registered.add("pc")
+        # 1. Register Kernel HotKeys dynamically from CONFIG (released while Consiz is paused)
+        self._hotkey_defs = [(HOTKEY_ID, "hotkey", CONFIG.hotkey, "explain")]
+        if self._on_dictate and getattr(CONFIG, "dictate_hotkey", ""):
+            self._hotkey_defs.append((HOTKEY_DICTATE_ID, "dictate", CONFIG.dictate_hotkey, "dictate"))
+        if self._on_pc and getattr(CONFIG, "pc_hotkey", ""):
+            self._hotkey_defs.append((HOTKEY_PC_ID, "pc", CONFIG.pc_hotkey, "pc"))
+        self._hotkeys_on = False
+        self._sync_hotkeys()
 
         # 2. Install Low-Level Mouse Hook with global permanent callback reference
         self._mouse_cb = HOOKPROC(self._mouse_hook_proc)
@@ -320,9 +346,12 @@ class Trigger:
                     self._fire_dictate("dictate-hotkey")
                 elif msg.wParam == HOTKEY_PC_ID:
                     self._fire_pc("pc-hotkey")
+            elif msg.message == WM_PAUSE_CHANGED:
+                self._sync_hotkeys()
             elif msg.message == 0x0113:  # WM_TIMER
                 # Watchdog tick: refresh mouse hook to ensure it never dies silently
                 if self._running:
+                    self._sync_hotkeys()
                     self._load_gate_settings()                       # picks up Settings changes without a restart
                     if self._gate.settings.mode == "hotkey":
                         self._apply_hook_mode()
@@ -336,12 +365,10 @@ class Trigger:
         if self._mouse_hook:
             user32.UnhookWindowsHookEx(self._mouse_hook)
             self._mouse_hook = None
-        if "hotkey" in self._native_registered:
-            user32.UnregisterHotKey(None, HOTKEY_ID)
-        if "dictate" in self._native_registered:
-            user32.UnregisterHotKey(None, HOTKEY_DICTATE_ID)
-        if "pc" in self._native_registered:
-            user32.UnregisterHotKey(None, HOTKEY_PC_ID)
+        for hk_id, name, _text, _what in self._hotkey_defs:
+            if name in self._native_registered:
+                user32.UnregisterHotKey(None, hk_id)
+        self._native_registered.clear()
 
     def start(self) -> None:
         self._running = True

@@ -343,6 +343,9 @@ def main() -> int:
                 text, summary = pc_mode.get_context()
             except Exception as e:
                 raise llm.LLMError(f"could not read the PC: {e}")
+            tok = llm.current_token()
+            if tok is not None:
+                tok.check()                             # Stop was pressed while the PC snapshot was being taken
             _dispatch(POPUP._set_meta, f"Looked at: {summary} · {time.strftime('%H:%M:%S')}")
             stream = pc_mode.stream_answer(
                 question, list(POPUP.history), text, pc_mode.last_windows(),

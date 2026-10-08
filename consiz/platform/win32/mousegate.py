@@ -12,6 +12,7 @@ excluded, in the mode the user chose — and gives everything else back untouche
   mode "ctrl_middle"  only Ctrl + middle click is Consiz's; plain middle clicks are never touched.
   mode "hotkey"       the mouse is never touched; use Ctrl+Alt+S / Ctrl+Alt+A.
   a DRAG (button held + mouse moved) always belongs to the app (autoscroll, panning).
+  paused (tray "Pause Consiz", or a full-screen app is in front): nothing is Consiz's.
 """
 from __future__ import annotations
 
@@ -64,11 +65,11 @@ class MiddleGate:
     def pending(self) -> bool:
         return self.state == self.PENDING
 
-    def down(self, x: int, y: int, ctrl_held: bool, foreground_app: str, now: float) -> Act:
+    def down(self, x: int, y: int, ctrl_held: bool, foreground_app: str, now: float, paused: bool = False) -> Act:
         self._forget_if_stale(now)
         self._since = now
         s = self.settings
-        if s.mode == "hotkey" or (foreground_app or "").lower() in s.excluded or (s.mode == "ctrl_middle" and not ctrl_held):
+        if paused or s.mode == "hotkey" or (foreground_app or "").lower() in s.excluded or (s.mode == "ctrl_middle" and not ctrl_held):
             self.state = self.PASSING          # not ours: the app gets this press AND its release
             return Act.PASS
         self.state, self._origin, self._since = self.PENDING, (x, y), now
