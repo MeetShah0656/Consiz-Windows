@@ -6,6 +6,8 @@ apply limits, force our own model/limits, and stream the answer back.
 Run:  pip install -r server/requirements.txt
       uvicorn server.app:app --host 0.0.0.0 --port 8080
 Env (required): OPENROUTER_API_KEY, GOOGLE_CLIENT_ID (same desktop client the app uses)
+Env (updates): LATEST_VERSION, MIN_VERSION, DOWNLOAD_URL, RELEASE_NOTES  (see GET /version; MIN_VERSION makes the server
+  refuse apps older than that with HTTP 426, so an old app cannot keep spending money)
 Env (optional): OPENROUTER_MODEL, OPENROUTER_FALLBACKS, MAX_OUTPUT_TOKENS (5000), ALLOWED_EMAILS (comma list),
   DAILY_LIMIT (50 answers per user/day), IP_DAILY_LIMIT (300 per IP/day), RATE_PER_MIN (12 per user),
   MAX_INPUT_CHARS (40000), MAX_MESSAGES (30), MAX_IMAGES (2 pictures of windows per request),
@@ -368,6 +370,24 @@ def _reasoning(raw) -> dict:
     return {"enabled": False, "exclude": True}
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    out = []
+    for part in str(v or "").strip().lstrip("vV").split("."):
+        digits = "".join(ch for ch in part if ch.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out) or (0,)
+
+
+def _check_app_version(version: str | None) -> None:
+    """Refuse apps older than MIN_VERSION (an operator's switch). Only when MIN_VERSION is set; an app that sends no
+    version header counts as the oldest."""
+    minimum = _cfg("MIN_VERSION")
+    if minimum and _version_tuple(version or "0") < _version_tuple(minimum):
+        url = _cfg("DOWNLOAD_URL")
+        raise HTTPException(426, "This version of Consiz is no longer supported. Please install the latest version"
+                                 + (f" from {url}" if url.lower().startswith("https://") else "") + ".")
+
+
 def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for", "")
     return (fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else ""))[:64]
@@ -480,9 +500,19 @@ def health(deep: int = 0):
     return out
 
 
+@app.get("/version")
+def version():
+    """What the app asks once a day: the newest version, the oldest allowed one and where to download. All values come
+    from the server's settings, so announcing an update needs no code change. Public: nothing secret in it."""
+    return {"latest": _cfg("LATEST_VERSION"), "minimum": _cfg("MIN_VERSION"), "url": _cfg("DOWNLOAD_URL"),
+            "notes": _cfg("RELEASE_NOTES")[:300]}
+
+
 @app.post("/v1/chat/completions")
-def chat(body: dict, request: Request, authorization: str | None = Header(default=None)):
+def chat(body: dict, request: Request, authorization: str | None = Header(default=None),
+         x_consiz_version: str | None = Header(default=None)):
     info = _verify(authorization)
+    _check_app_version(x_consiz_version)
     key = _cfg("OPENROUTER_API_KEY")
     if not key:
         raise HTTPException(500, "Server is not configured.")

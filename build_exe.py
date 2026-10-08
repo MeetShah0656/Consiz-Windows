@@ -67,6 +67,10 @@ def generate_assets(asset_dir: Path) -> Path:
 # only if a single file is truly needed.
 ONEFILE = "--onefile" in sys.argv
 
+# Build somewhere else (CONSIZ_DIST_DIR=C:\temp\consiz-build) when Consiz is running from dist\ right now:
+# Windows cannot replace the files of a running program.
+OUT_DIR = os.environ.get("CONSIZ_DIST_DIR", "").strip()
+
 BAKED_KEYS = ("CONSIZ_SERVER_URL", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")   # public client settings only
 
 
@@ -128,6 +132,12 @@ def _build(workspace: Path):
         "--hidden-import", "win32ctypes.pywin32.win32cred",
         "--hidden-import", "consiz.platform.win32.settings",
         "--hidden-import", "consiz.platform.win32.tray",
+        "--hidden-import", "consiz.platform.win32.dpi",
+        "--hidden-import", "consiz.platform.win32.fullscreen",
+        "--hidden-import", "consiz.pause",
+        "--hidden-import", "consiz.hotkeys",
+        "--hidden-import", "consiz.localdata",
+        "--hidden-import", "consiz.updater",
 
         # Packages from the global Python install that Consiz never uses (they bloated the build to 380 MB)
         *[a for m in ("PySide6", "shiboken6", "PyQt5", "PyQt6", "llvmlite", "numba", "pyarrow", "psycopg2",
@@ -139,6 +149,8 @@ def _build(workspace: Path):
         "--exclude-module", "tests",
         "--clean",
         "--noconfirm",
+        *(["--distpath", str(Path(OUT_DIR) / "dist"), "--workpath", str(Path(OUT_DIR) / "build"),
+           "--specpath", OUT_DIR] if OUT_DIR else []),
         str(workspace / "main.py"),
     ]
 
@@ -148,7 +160,8 @@ def _build(workspace: Path):
         print(f"[!] PyInstaller failed with code {res.returncode}")
         sys.exit(res.returncode)
 
-    exe_output = workspace / "dist" / ("Consiz.exe" if ONEFILE else "Consiz/Consiz.exe")
+    dist_root = Path(OUT_DIR) / "dist" if OUT_DIR else workspace / "dist"
+    exe_output = dist_root / ("Consiz.exe" if ONEFILE else "Consiz/Consiz.exe")
     if exe_output.exists():
         size_mb = exe_output.stat().st_size / (1024 * 1024)
         print("\n" + "=" * 60)

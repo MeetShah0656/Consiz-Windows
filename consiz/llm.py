@@ -13,6 +13,7 @@ from typing import Iterator
 
 import requests
 
+from . import __version__
 from .config import CONFIG
 
 
@@ -51,6 +52,10 @@ class SignInRequired(LLMError):
 class LLMUnavailable(LLMError):
     """The server or AI could not be reached, timed out, or is overloaded (not the user's fault, not a rule).
     This is the only kind of failure the offline fallback may answer instead."""
+
+
+class UpdateRequired(LLMError):
+    """The server no longer accepts this version of the app (HTTP 426): the user must install the latest version."""
 
 
 class Cancelled(LLMError):
@@ -397,6 +402,7 @@ def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> I
         "Content-Type": "application/json",
         "HTTP-Referer": "https://asconciz.local",   # optional OpenRouter attribution headers
         "X-Title": "As Conciz",
+        "X-Consiz-Version": __version__,                # lets the server retire very old apps (see consiz/updater.py)
     }
     models = ([CONFIG.vision_model, *CONFIG.vision_fallbacks] if has_images(messages)
               else [CONFIG.openrouter_model, *CONFIG.openrouter_fallbacks])    # pictures need an image-reading model
@@ -433,6 +439,8 @@ def _openrouter_sse(messages: list[dict], reasoning: dict, max_tokens: int) -> I
                             from . import auth
                             auth.sign_out()               # the server rejected our token: it is no longer valid
                             raise SignInRequired("Your sign-in expired. Please sign in again.")
+                        if r.status_code == 426 and on_server:
+                            raise UpdateRequired(_http_error(r))
                         if r.status_code != 200:
                             raise (LLMUnavailable if r.status_code >= 500 else LLMError)(_http_error(r))
                         finish = None
@@ -556,37 +564,82 @@ def _health_openrouter() -> tuple[bool, str]:
     return True, f"OpenRouter · {CONFIG.openrouter_model}"
 
 
-# ---------------------------------------------------------------- Ollama (optional local fallback)
+# ---------------------------------------------------------------- Ollama (offline fallback / offline mode)
+# Talks to Ollama's local HTTP API directly (http://localhost:11434): no extra Python package, so it works the same
+# in the packaged exe as from source.
+def _ollama_url(path: str) -> str:
+    return CONFIG.ollama_host.rstrip("/") + path
+
+
 def _stream_ollama(task: str, content: str, hint: str = "") -> Iterator[str]:
+    return _stream_ollama_messages(_messages(task, content, hint))
+
+
+def _stream_ollama_messages(messages: list[dict]) -> Iterator[str]:
+    """Stream a chat from the local Ollama server. Pictures are dropped (the offline model is text-only)."""
+    messages = _text_only(messages)
+    tok = current_token()
+    timeout = (5, getattr(CONFIG, "ollama_timeout_s", 180.0))
+    body = {"model": CONFIG.ollama_model, "messages": messages, "stream": True, "think": False,
+            "options": {"temperature": CONFIG.temperature}}
     try:
-        import ollama
-    except (ImportError, ModuleNotFoundError) as e:
-        raise LLMError("ollama package not installed. Run: pip install ollama") from e
-    kwargs = dict(model=CONFIG.ollama_model, messages=_messages(task, content, hint), stream=True,
-                  options={"temperature": CONFIG.temperature})
-    client = ollama.Client(host=CONFIG.ollama_host, timeout=getattr(CONFIG, "ollama_timeout_s", 180.0))
-    try:
-        try:
-            it = client.chat(think=False, **kwargs)
-        except TypeError:
-            it = client.chat(**kwargs)
-        for chunk in it:
-            piece = chunk.get("message", {}).get("content", "") if isinstance(chunk, dict) else chunk.message.content
-            if piece:
-                yield piece
-    except ollama.ResponseError as e:
-        raise LLMError(f"Ollama error: {e.error}") from e
-    except Exception as e:
+        for attempt in (1, 2):
+            if tok:
+                tok.check()
+            with _SESSION.post(_ollama_url("/api/chat"), json=body, stream=True, timeout=timeout) as r:
+                if tok:
+                    tok.add(r)
+                try:
+                    if r.status_code != 200:
+                        try:
+                            msg = str(r.json().get("error", ""))
+                        except Exception:
+                            msg = r.text[:200]
+                        if attempt == 1 and r.status_code == 400 and "think" in msg.lower():
+                            body.pop("think")                  # an older / non-thinking model: ask again without it
+                            continue
+                        raise LLMError(f"Ollama error: {msg or r.status_code}")
+                    for raw in r.iter_lines():
+                        if tok:
+                            tok.check()
+                        if not raw:
+                            continue
+                        try:
+                            obj = json.loads(raw)
+                        except ValueError:
+                            continue
+                        if obj.get("error"):
+                            raise LLMError(f"Ollama error: {obj['error']}")
+                        piece = (obj.get("message") or {}).get("content", "")
+                        if piece:
+                            yield piece
+                        if obj.get("done"):
+                            return
+                    return
+                finally:
+                    if tok:
+                        tok.drop(r)
+    except LLMError:
+        raise
+    except requests.exceptions.ConnectionError as e:
+        if tok and tok.cancelled:
+            raise Cancelled() from None
+        raise LLMError(f"Ollama not reachable at {CONFIG.ollama_host}. Start it with: ollama serve") from e
+    except requests.exceptions.RequestException as e:
+        if tok and tok.cancelled:
+            raise Cancelled() from None
         raise LLMError(f"{type(e).__name__}: {e}") from e
+    except Exception:
+        if tok and tok.cancelled:
+            raise Cancelled() from None
+        raise
 
 
 def _health_ollama() -> tuple[bool, str]:
     try:
-        import ollama
-    except (ImportError, ModuleNotFoundError):
-        return False, "Ollama python package is not installed (run: pip install ollama)"
-    try:
-        names = [m.get("model") or m.get("name") for m in ollama.Client(host=CONFIG.ollama_host, timeout=5).list().get("models", [])]
+        r = _SESSION.get(_ollama_url("/api/tags"), timeout=3)
+        r.raise_for_status()
+        names = [m.get("model") or m.get("name") for m in r.json().get("models", [])]
     except Exception as e:
         return False, f"Ollama not reachable at {CONFIG.ollama_host} ({type(e).__name__}). Start it with: ollama serve"
     if not any(n and n.split(":")[0] == CONFIG.ollama_model.split(":")[0] for n in names):
@@ -652,28 +705,6 @@ def _text_only(messages: list[dict]) -> list[dict]:
                                                       "cannot read pictures. Say that you could not read it.)"}
         out.append(m)
     return out
-
-
-def _stream_ollama_messages(messages: list[dict]) -> Iterator[str]:
-    messages = _text_only(messages)
-    try:
-        import ollama
-    except (ImportError, ModuleNotFoundError) as e:
-        raise LLMError("ollama package not installed. Run: pip install ollama") from e
-    client = ollama.Client(host=CONFIG.ollama_host, timeout=getattr(CONFIG, "ollama_timeout_s", 180.0))
-    try:
-        try:
-            it = client.chat(model=CONFIG.ollama_model, messages=messages, stream=True, think=False,
-                             options={"temperature": CONFIG.temperature})
-        except TypeError:
-            it = client.chat(model=CONFIG.ollama_model, messages=messages, stream=True,
-                             options={"temperature": CONFIG.temperature})
-        for ch in it:
-            piece = ch.get("message", {}).get("content", "") if isinstance(ch, dict) else ch.message.content
-            if piece:
-                yield piece
-    except Exception as e:
-        raise LLMError(f"{type(e).__name__}: {e}") from e
 
 
 def stream_messages(messages: list[dict]) -> Iterator[str]:

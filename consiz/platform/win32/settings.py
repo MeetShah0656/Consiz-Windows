@@ -435,9 +435,33 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
 
     _button(a, "Clear local data…", clear_all).pack(anchor="w", pady=(px(4), 0))
 
-    from consiz import __version__
-    tk.Label(a, text=f"Consiz {__version__}", font=(FONT_TEXT, 8), bg=CREAM_50, fg=INK_MUTED, anchor="w").pack(
-        fill="x", side="bottom", pady=(px(8), 0))
+    from consiz import __version__, updater
+    vrow = tk.Frame(a, bg=CREAM_50)
+    vrow.pack(fill="x", side="bottom", pady=(px(8), 0))
+    tk.Label(vrow, text=f"Consiz {__version__}", font=(FONT_TEXT, 8), bg=CREAM_50, fg=INK_MUTED, anchor="w").pack(side="left")
+
+    def check_updates():
+        import threading
+
+        def work():
+            info = updater.check()
+            if info is None:
+                msg, ok = "Could not check for updates. Try again later.", False
+            elif info["required"] or info["update_available"]:
+                msg, ok = f"Version {info['latest'] or 'newer'} is available: see the tray menu > Download.", True
+            else:
+                msg, ok = f"You have the latest version ({info['current']}) ✓", True
+            try:
+                win.after(0, lambda: say(msg, ok))
+            except tk.TclError:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    if llm.server_mode():
+        link = tk.Label(vrow, text="Check for updates", font=(FONT_TEXT, 8, "underline"), bg=CREAM_50, fg=MAROON_700,
+                        cursor="hand2")
+        link.pack(side="right")
+        link.bind("<Button-1>", lambda e: check_updates())
 
     win.focus_set()
     if created_root:

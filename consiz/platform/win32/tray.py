@@ -19,7 +19,7 @@ except ImportError:
     Image = None
     ImageDraw = None
 
-from consiz import hotkeys, pause
+from consiz import hotkeys, pause, updater
 from consiz.config import CONFIG
 
 RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -156,6 +156,36 @@ class SystemTray:
         except Exception:
             pass
 
+    def _update_ready(self) -> bool:
+        info = updater.last()
+        return bool(info and info.get("update_available"))
+
+    def _open_update(self, icon, item):
+        url = (updater.last() or {}).get("url", "")
+        if url:
+            import webbrowser
+            webbrowser.open(url)                          # the user installs it themselves: nothing runs by itself
+        else:
+            icon.notify("The download link is not set yet. Please ask the person who shared Consiz with you.", "Consiz")
+
+    def _check_updates_now(self, icon, item):
+        def work():
+            info = updater.check()
+            if info is None:
+                msg = "Could not check for updates. Please try again later."
+            elif info["required"]:
+                msg = "This version is no longer supported. Right-click the tray icon and choose Download update."
+            elif info["update_available"]:
+                msg = f"Version {info['latest']} is available. Right-click the tray icon and choose Download update."
+            else:
+                msg = f"You have the latest version ({info['current']})."
+            try:
+                icon.update_menu()
+                icon.notify(msg, "Consiz updates")
+            except Exception:
+                pass
+        threading.Thread(target=work, name="consiz-update-now", daemon=True).start()
+
     def _trigger_explain(self, icon, item):
         if self.on_explain:
             threading.Thread(target=self.on_explain, args=("tray",), daemon=True).start()
@@ -287,7 +317,10 @@ class SystemTray:
             Item("🖱 Trigger", _make_trigger_menu()),
             Item("⚙️ Settings…", self._open_settings),
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
+            Item(lambda item: f"⬆ Download Consiz {(updater.last() or {}).get('latest', '')}", self._open_update,
+                 visible=lambda item: self._update_ready()),
             Item("Help && diagnostics", Menu(
+                Item("Check for updates", self._check_updates_now),
                 Item("Open log folder", self._open_logs),
                 Item("Copy diagnostics for support", self._copy_diagnostics),
             )),

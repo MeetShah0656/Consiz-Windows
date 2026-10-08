@@ -434,6 +434,22 @@ def main() -> int:
                 welcome="Select any text, then press the middle mouse button.",
             )
             tray.start()
+            if llm.server_mode():
+                from consiz import updater
+
+                def _on_update(info: dict) -> None:
+                    """Tell the user ONCE per version; the tray menu keeps a Download item after that."""
+                    key = "update_required" if info["required"] else info["latest"]
+                    if prefs.get("update_notified") == key or tray.icon is None:
+                        return
+                    prefs.set("update_notified", key)
+                    tray.icon.update_menu()
+                    tray.icon.notify("This version is no longer supported. Right-click the tray icon > Download update."
+                                     if info["required"] else
+                                     f"Consiz {info['latest']} is available. Right-click the tray icon > Download.",
+                                     "Consiz update")
+
+                updater.start_background_check(_on_update)
         except Exception as e:
             output.notify(f"Tray notice: {e}")
 

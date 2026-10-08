@@ -14,6 +14,11 @@
   - `DATABASE_URL` — recommended, see "Keep the daily limits" below
   - `ALLOWED_EMAILS` — optional; comma-separated; empty = any verified Google account
 
+## Announce an app update (no code change)
+- Build the installer (`python scripts/build_installer.py`), upload it somewhere with an https link.
+- Render > Environment: `LATEST_VERSION` = the new version, `DOWNLOAD_URL` = that link. Every running app learns about it within a day and shows a tray item "Download Consiz x.y.z".
+- `MIN_VERSION` is the kill-switch: apps older than it are refused with a clear message (HTTP 426). Set it only after the new installer is online; leave it empty otherwise. `GET /version` shows what the server is announcing.
+
 ## Check it works
 - Open `https://<your-url>/health` in a browser. It should show `{"ok":true}`.
 - `POST /v1/chat/completions` without sign-in must answer 401. That means it is protected.
@@ -39,6 +44,9 @@
 - Google Cloud Console > Google Auth Platform > **Audience** > **Publish app** (In production).
 - While it says "Testing": only listed test users can sign in, and sign-ins expire after 7 days.
 - Basic sign-in (email + profile) needs no Google review.
+
+## Region
+- `render.yaml` now says `region: singapore` (users are in India, the database is in Singapore). Render cannot move an existing service: create a NEW service from the Blueprint, copy the environment variables, then rebuild the app with the new URL (`CONSIZ_SERVER_URL` in `.env`, `python build_exe.py`).
 
 ## Good to know (free plan)
 - The server sleeps after ~15 min idle. The first answer after a pause takes 30-60 s.

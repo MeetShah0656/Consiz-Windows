@@ -1078,6 +1078,8 @@ def _close_stream(stream) -> None:
 def _friendly_error(detail: str) -> str:
     from consiz.config import CONFIG
     d = detail.lower()
+    if "no longer supported" in d:
+        return "Please update Consiz: this version is no longer supported."
     if "401" in d or "api key" in d or "insufficient credits" in d or "402" in d:
         return "It's not you, it's the AI. (key problem — check the .env file)"
     if "429" in d or "rate limit" in d:

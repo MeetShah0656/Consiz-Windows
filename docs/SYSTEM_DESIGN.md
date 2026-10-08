@@ -177,3 +177,20 @@ Failure behaviour: server unreachable → friendly retry text; 401 → sign in a
 - Ship `ALLOWED_EMAILS` closed beta first, or open sign-up now?
 - Phone sign-in: which SMS provider, and when?
 - Open-source the client core (distribution) — yes/no/when?
+
+## 14. Changes since this was first written (2026-10-08, WIN-025 … WIN-030)
+
+| Area | What exists now | Where |
+|---|---|---|
+| Real cost | server records tokens/cost per user/day/model (`spend` table); `scripts/spend_report.py` prices real usage on paid models | `server/app.py`, `scripts/spend_report.py` |
+| Stop / cancel | per-request `CancelToken`; Send turns into Stop; closing the window / New chat cancels; the HTTP stream is closed so the server stops paying; errors are typed (`Cancelled`, `LLMUnavailable`, `UpdateRequired`) | `consiz/llm.py`, `popup.py` |
+| Pause | tray Pause/Resume, hotkeys released while paused, auto-pause for full-screen apps (Windows' own busy signal) | `consiz/pause.py`, `trigger.py`, `fullscreen.py` |
+| Fallback chain | cloud → offline Ollama **only** for unreachable/overloaded errors, never after text started, never for limits/sign-in/426; visible note | `llm._with_offline_fallback` |
+| Big files | first 100,000 rows only (stated in the answer); workbooks > 150 MB and pasted > 20 M chars refused | `deterministic.analyze_csv` |
+| DPI / monitors | system-DPI aware; `px()` for fixed sizes; popup placed in the work area of the monitor under the cursor | `platform/win32/dpi.py` |
+| Settings | five tabs, changes apply at once; shortcuts validated and re-registered live; clear local data keeps `profile.md` | `platform/win32/settings.py`, `hotkeys.py`, `localdata.py` |
+| Updates | `GET /version` (LATEST_VERSION, MIN_VERSION, DOWNLOAD_URL from server settings); app asks daily, shows a tray "Download" item, never installs by itself; `MIN_VERSION` makes the server refuse old apps with HTTP 426 | `consiz/updater.py`, `server/app.py` |
+| Installer | Inno Setup script (per-user, no admin, same autostart key as the tray) + build script. **Never built yet; unsigned** | `installer/consiz.iss`, `scripts/build_installer.py` |
+
+Still open from §13: macOS port of PC mode/chat, Android/iOS clients, plans + billing, background watcher and confirm-first actions (T-12: conflicts with the non-goal "killing processes" above, so it needs a product decision), teammate verification, installer build + signing, compatibility matrix (WIN-010), Render in Singapore.
+

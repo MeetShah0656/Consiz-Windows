@@ -3,6 +3,9 @@ services:
     name: conciz-server
     runtime: python
     plan: free
+    # Singapore: users are in India and the database (Neon) is in Singapore. A service's region cannot be changed later:
+    # to move the existing US service, create a NEW service from this file (New > Blueprint), then point the app at its URL.
+    region: singapore
     buildCommand: pip install -r server/requirements.txt
     startCommand: uvicorn server.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -21,5 +24,11 @@ services:
         value: "300"
       - key: RATE_PER_MIN
         value: "12"
+      - key: LATEST_VERSION
+        sync: false          # e.g. 0.4.0 - the newest released app; the app shows 'update available'
+      - key: DOWNLOAD_URL
+        sync: false          # https link to the installer people should download
+      - key: MIN_VERSION
+        sync: false          # optional: apps older than this are refused (HTTP 426). Leave empty unless retiring old apps
       - key: ALLOWED_EMAILS
         sync: false          # optional: comma-separated emails; empty = any verified Google account
