@@ -15,7 +15,8 @@ def test_audio_recorder_init():
     assert rec.silence_threshold == 0.02
     assert rec.silence_duration_s == 1.0
     assert not rec.is_recording
-    assert rec.auto_stop_on_silence is False
+    assert rec.auto_stop_on_silence is True, "stops by itself after a pause: no second key press needed"
+    assert AudioRecorder(auto_stop_on_silence=False).auto_stop_on_silence is False, "can still be switched off"
 
 
 def test_detect_script_multilingual():

@@ -50,5 +50,13 @@ on one laptop. Your job is to try it for real and write your name in `verified_b
 24. Tray > Help > *Check for updates* → a notification says you have the latest version (or lists a newer one).
 25. (Server owner) set `LATEST_VERSION` above the app's version and `DOWNLOAD_URL` to an https link on Render → within a day (or via *Check for updates*) the tray shows **⬆ Download Consiz x.y.z**; clicking it opens the link in the browser. Nothing is installed by itself.
 
+## J. Voice dictation (WIN-035)
+26. Open the answer window (Ctrl+Alt+A). A **🎙 button** sits left of Send. Tap it, say "what is slowing my PC down", then **pause**: the button turns into a red ■ while listening, stops by itself after the pause, your words appear as your message and get answered.
+27. Select a sentence in any app, press **Ctrl+Alt+D**, say "translate this into Hindi", pause → the answer appears. Press Ctrl+Alt+D again while listening → it stops at once.
+28. With **nothing selected**, press Ctrl+Alt+D → the PC chat opens and listens; ask a question about the PC.
+29. First use on a PC **without** the speech model: a box says it needs a one-time download (about 480 MB), where it comes from, and that audio is never uploaded. **No** → nothing downloads. **Yes** → the status line shows a percentage; afterwards it works with Wi-Fi off.
+30. Settings > General > Voice dictation: untick the box → the 🎙 button, the tray item and Ctrl+Alt+D disappear within a few seconds. Try the model sizes (Small / Base / Tiny); try speaking Hindi or Gujarati if you can.
+31. Windows Settings > Privacy & security > Microphone > turn desktop apps **off** → tapping 🎙 shows a clear message about it (not a crash).
+
 ## When you are done
 Add your name to `verified_by` in `team/checkpoints-<yourname>-windows.csv` **only for the rows whose steps all passed**, and send the FAIL list to the builder.

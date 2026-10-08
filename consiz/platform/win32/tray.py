@@ -19,7 +19,7 @@ except ImportError:
     Image = None
     ImageDraw = None
 
-from consiz import hotkeys, pause, updater
+from consiz import hotkeys, pause, updater, voice
 from consiz.config import CONFIG
 
 RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -314,7 +314,8 @@ class SystemTray:
             Item(lambda item: "▶ Resume Consiz" if pause.is_paused() else "⏸ Pause Consiz", self._toggle_pause),
             Item(lambda item: f"Explain Selection ({hotkeys.pretty(CONFIG.hotkey)})", self._trigger_explain),
             *([Item(lambda item: f"Ask about my PC ({hotkeys.pretty(CONFIG.pc_hotkey)})", self._trigger_pc)] if self.on_pc else []),
-            Item("Voice Dictate (Ctrl+Alt+D)", self._trigger_dictate),
+            Item(lambda item: f"Voice Dictate ({hotkeys.pretty(CONFIG.dictate_hotkey)})", self._trigger_dictate,
+                 visible=lambda item: voice.enabled()),
             Menu.SEPARATOR,
             Item("🌐 Answer Language", _make_lang_menu()),
             Item("🖱 Trigger", _make_trigger_menu()),

@@ -121,7 +121,6 @@ def _build(workspace: Path):
         "--hidden-import", "PIL._imaging",
         "--hidden-import", "PIL.Image",
         "--hidden-import", "PIL.ImageDraw",
-        "--hidden-import", "sounddevice",
         "--hidden-import", "numpy",
         "--hidden-import", "consiz.languages",
         "--hidden-import", "consiz.prefs",
@@ -138,10 +137,26 @@ def _build(workspace: Path):
         "--hidden-import", "consiz.hotkeys",
         "--hidden-import", "consiz.localdata",
         "--hidden-import", "consiz.updater",
+        "--hidden-import", "consiz.voice",
+        "--hidden-import", "consiz.dictation",
+        # Voice dictation (speech -> text on the PC): faster-whisper and ctranslate2 have no PyInstaller hook, so their
+        # data (the silero voice-activity model) and native libraries are collected explicitly. The speech MODEL itself
+        # is not inside the app: it is downloaded once, with the user's OK (consiz/voice.py).
+        "--collect-all", "faster_whisper",
+        "--collect-binaries", "ctranslate2",              # its native libraries only: NOT collect-all (that pulls in the
+        "--collect-data", "ctranslate2",                  # converter tools, which import torch/tensorflow: +1 GB)
+        "--collect-all", "_sounddevice_data",
+        "--hidden-import", "ctranslate2",
+        "--hidden-import", "sounddevice",
+        "--hidden-import", "huggingface_hub",
+        "--hidden-import", "tokenizers",
 
         # Packages from the global Python install that Consiz never uses (they bloated the build to 380 MB)
         *[a for m in ("PySide6", "shiboken6", "PyQt5", "PyQt6", "llvmlite", "numba", "pyarrow", "psycopg2",
                       "sqlalchemy", "IPython", "notebook") for a in ("--exclude-module", m)],
+        # Big libraries installed on some PCs that Consiz never uses (voice only needs ctranslate2 + onnxruntime)
+        *[a for m in ("torch", "torchvision", "torchaudio", "tensorflow", "keras", "transformers", "openvino", "h5py",
+                      "tensorboard", "jax", "jaxlib", "sklearn", "ctranslate2.converters") for a in ("--exclude-module", m)],
         "--exclude-module", "matplotlib",
         "--exclude-module", "scipy",
         "--exclude-module", "IPython",

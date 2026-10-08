@@ -12,7 +12,7 @@ from tkinter import messagebox, ttk
 from typing import Callable, Optional
 import webbrowser
 
-from consiz import hotkeys, pause, prefs
+from consiz import hotkeys, pause, prefs, voice
 from consiz.config import CONFIG
 from consiz.platform.win32 import dpi
 from consiz.platform.win32.dpi import px
@@ -133,7 +133,7 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     # Open on the screen the mouse is on, never bigger than it (a 1366x768 laptop at 125 % has only ~580 px of height);
     # the tabs scroll when there is not enough room, and the window can be resized.
     area = dpi.work_area_at(win.winfo_pointerx(), win.winfo_pointery())
-    width, height = dpi.fit_size((px(620), px(600)), area, fraction=0.9)    # 0.9: leaves room for the title bar
+    width, height = dpi.fit_size((px(620), px(740)), area, fraction=0.9)    # 0.9: leaves room for the title bar
     win.geometry(f"{width}x{height}+{area[0] + max(0, (area[2] - area[0] - width) // 2)}+"
                  f"{area[1] + max(0, (area[3] - area[1] - height) // 3)}")
     win.minsize(min(px(460), width), min(px(340), height))
@@ -256,6 +256,42 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     _check(g, "If the cloud cannot be reached, answer offline when Ollama is running", fb_var,
            lambda: (prefs.set("offline_fallback", fb_var.get()), say("Saved ✓")))
 
+    _section(g, "Voice dictation")
+    if not voice.available():
+        _note(g, "Voice dictation is not included in this version of Consiz.")
+    else:
+        voice_var = tk.BooleanVar(value=bool(prefs.get("voice_enabled", True)))
+        _check(g, "Let me speak to Consiz (microphone button and the Voice shortcut)", voice_var,
+               lambda: (prefs.set("voice_enabled", voice_var.get()), say("Saved ✓")))
+        _note(g, "Your voice is turned into text on this PC and the audio is never uploaded: only the words you "
+                 "say are sent to the AI, like a typed question.")
+        names_by_label = {f"{label} (~{mb} MB)": name for name, (label, mb) in voice.MODELS.items()}
+        current_label = next((lbl for lbl, nm in names_by_label.items() if nm == CONFIG.whisper_model),
+                             next(iter(names_by_label)))
+        model_var = tk.StringVar(value=current_label)
+        model_combo = ttk.Combobox(g, textvariable=model_var, values=list(names_by_label), state="readonly",
+                                   font=(FONT_TEXT, 10), style="Cream.TCombobox")
+        model_combo.pack(fill="x", pady=(px(4), 0))
+        model_status = _note(g, "")
+
+        def show_model_status():
+            name = names_by_label[model_var.get()]
+            model_status.config(text="Speech model: downloaded, works offline ✓" if voice.model_cached(name) else
+                                f"Speech model: not downloaded yet. Consiz asks once, then downloads about "
+                                f"{voice.model_mb(name)} MB the first time you speak.")
+
+        def on_model(_e=None):
+            from consiz import dictation
+            name = names_by_label[model_var.get()]
+            CONFIG.whisper_model = name
+            prefs.set("whisper_model", name)
+            dictation.reset_engine()
+            show_model_status()
+            say("Voice model saved ✓")
+
+        model_combo.bind("<<ComboboxSelected>>", on_model)
+        show_model_status()
+
     if not server:                                          # developer builds only
         _section(g, "OpenRouter API key (developer build)")
         key_var = tk.StringVar(value=get_stored_api_key())
@@ -331,11 +367,13 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
              "A shortcut such as Ctrl+S alone would break Save in every app, so it is refused.")
     hk_rows = {}
     for label, pref_key, default in (("Explain selection", "hotkey_explain", "<ctrl>+<alt>+s"),
-                                     ("Ask about my PC", "hotkey_pc", "<ctrl>+<alt>+a")):
+                                     ("Ask about my PC", "hotkey_pc", "<ctrl>+<alt>+a"),
+                                     ("Voice dictation", "hotkey_dictate", "<ctrl>+<alt>+d")):
         row = tk.Frame(k, bg=CREAM_50)
         row.pack(fill="x", pady=(px(3), 0))
         tk.Label(row, text=label, font=(FONT_TEXT, 10), bg=CREAM_50, fg=MAROON_900, width=18, anchor="w").pack(side="left")
-        current = CONFIG.hotkey if pref_key == "hotkey_explain" else CONFIG.pc_hotkey
+        current = {"hotkey_explain": CONFIG.hotkey, "hotkey_pc": CONFIG.pc_hotkey,
+                   "hotkey_dictate": CONFIG.dictate_hotkey}[pref_key]
         var = tk.StringVar(value=hotkeys.pretty(current))
         _entry(row, var, width=16).pack(side="left", ipady=px(3))
         hk_rows[pref_key] = (var, default)
@@ -349,13 +387,14 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
                 say("That shortcut is not allowed. Try Ctrl+Alt+<letter>.", ok=False)
                 return
             values[pref_key] = norm
-        if values["hotkey_explain"] == values["hotkey_pc"]:
-            say("The two shortcuts must be different.", ok=False)
+        if len(set(values.values())) != len(values):
+            say("The shortcuts must all be different.", ok=False)
             return
         for pref_key, norm in values.items():
             prefs.set(pref_key, norm)
             hk_rows[pref_key][0].set(hotkeys.pretty(norm))
         CONFIG.hotkey, CONFIG.pc_hotkey = values["hotkey_explain"], values["hotkey_pc"]
+        CONFIG.dictate_hotkey = values["hotkey_dictate"]
         say("Shortcuts saved ✓ (active within a few seconds)")
 
     btns = tk.Frame(k, bg=CREAM_50)

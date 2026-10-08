@@ -143,19 +143,73 @@ def on_trigger(source: str):
         output.render(res)
 
 
+_VOICE_CANCEL = threading.Event()
+
+
+def _notice(text: str) -> None:
+    """A plain message box (voice problems can happen before any Consiz window is open)."""
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text, "Consiz - Voice dictation", 0x40)
+    else:
+        output.notify(text)
+
+
+def _voice_consent(model: str, mb: int) -> bool:
+    """First use only: the speech model is not inside the app. Say what it is, how big, where it goes - and ask."""
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    nl = chr(10)
+    msg = (f"Voice dictation needs a one-time download of the speech model (about {mb} MB) from Hugging Face." + nl + nl
+           + "It is kept on this PC. Your voice is turned into text on this PC and the audio is never uploaded; "
+           "only the words you say are sent to the AI, like a typed question." + nl + nl + "Download it now?")
+    return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - Voice dictation", 0x24) == 6   # YES/NO + question icon
+
+
+def _voice_ready() -> bool:
+    """Worker thread: make sure dictation can start now (model on this PC, or download it with the user's OK)."""
+    from consiz import voice
+
+    def progress(text: str) -> None:
+        if POPUP is not None:
+            from consiz.platform.win32.popup import _dispatch
+            _dispatch(POPUP._set_meta, text)
+        output.notify(text)
+
+    _VOICE_CANCEL.clear()
+    ok, why = voice.prepare(_voice_consent, progress, _VOICE_CANCEL)
+    if not ok and why:
+        _notice(why)
+    return ok
+
+
 def on_dictate_trigger(source: str) -> None:
+    """Ctrl+Alt+D (or the tray item): with text selected, speak what to do with it; with nothing selected, speak a
+    question about this PC. Pressing it again while listening stops at once (it also stops by itself after a pause)."""
     from consiz.capture import capture
     output.notify(f"dictate trigger: {source}")
-    if POPUP is not None and getattr(POPUP, "_is_dictating", False):
-        output.notify("🎙 Stopping dictation on toggle…")
+    if POPUP is not None and POPUP.is_listening():
+        output.notify("stopping dictation (shortcut pressed again)")
         POPUP.stop_dictation()
         return
-    ctx = capture()
-    output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} — starting dictation…")
-    if POPUP is not None:
-        POPUP.start_dictation_flow(ctx)
-    else:
+    if _login_needed():
+        return
+    ctx = capture()                                   # first: the selection must be read before any box takes focus
+    output.notify(f"captured {ctx.size_bytes} bytes from {ctx.source_app} via {ctx.capture_method.value.lower()} - starting dictation")
+    if POPUP is None:
         run_terminal_dictation(ctx)
+        return
+    if not _voice_ready():
+        return
+    from consiz.platform.win32.popup import _dispatch
+    if ctx.is_empty:
+        if not _pc_mode_consent():
+            return
+        POPUP.open_pc_chat(note="Nothing was selected, so speak a question about this PC.")
+        _dispatch(POPUP.begin_voice_question)
+    else:
+        POPUP.start_dictation_flow(ctx)
 
 
 def _pc_mode_consent() -> bool:
@@ -232,6 +286,7 @@ def main() -> int:
     ap.add_argument("--model", default=None, help="override model id for the chosen provider")
     ap.add_argument("--no-stream", action="store_true")
     ap.add_argument("--no-color", action="store_true")
+    ap.add_argument("--voice-selftest", metavar="WAVFILE", help="transcribe a recorded .wav with the speech model, print the words, exit")
     ap.add_argument("--terminal", action="store_true", help="print results in the terminal instead of the popup window")
     ap.add_argument("--hotkey", default=CONFIG.hotkey, help="keyboard fallback, pynput syntax (e.g. '<ctrl>+<alt>+s')")
     ap.add_argument("--elevate", action="store_true", help="re-launch with elevated Administrator privileges on Windows")
@@ -260,6 +315,8 @@ def main() -> int:
         ok, msg = llm.health()
         output.notify(("✓ " if ok else "✗ ") + msg)
 
+    if args.voice_selftest:
+        return _voice_selftest(args.voice_selftest)
     one_shot = bool(args.text is not None or args.path or args.capture or args.dictate)
     if not one_shot:
         llm.start_keepalive()
@@ -268,8 +325,7 @@ def main() -> int:
     else:   # the listener must not wait on the network (a sleeping server can take 30-50 s to answer)
         threading.Thread(target=_report_health, daemon=True, name="health-check").start()
 
-    # Pre-warm faster-whisper model in background
-    get_dictation_engine().warmup()
+    # The speech model is loaded when dictation is first used (voice.prepare), not at start-up.
 
     if args.dictate:
         if args.text is not None:
@@ -311,14 +367,11 @@ def main() -> int:
         return 1
 
     from consiz.trigger import Trigger
-    # Dictation hotkey temporarily disabled (not yet part of the shared Mac feature
-    # set — see As-Conciz/20-For-Meet-What-Consiz-Does-Today-Plain-Words.md). Backend
-    # (on_dictate_trigger, run_terminal_dictation, consiz/dictation.py) is untouched —
-    # passing on_dictate=on_dictate_trigger here re-enables it.
+    # Voice dictation (Ctrl+Alt+D) is on for Windows: speech is turned into text on this PC (faster-whisper).
     trig = Trigger(
         on_trigger,
         on_busy=lambda: output.notify("still working on the previous request — wait a moment"),
-        **({"on_pc": on_pc_trigger} if sys.platform == "win32" else {}),
+        **({"on_pc": on_pc_trigger, "on_dictate": on_dictate_trigger} if sys.platform == "win32" else {}),
     )
     trig.start()
     where = "in the terminal" if args.terminal else "in a popup next to your selection"
@@ -373,6 +426,7 @@ def main() -> int:
     POPUP.on_auth_needed = _reopen_login
     POPUP.on_ask = ask_handler
     POPUP.on_dictate = dictate_handler
+    POPUP.on_voice_prepare = _voice_ready
 
     from consiz import prefs
 
@@ -459,6 +513,31 @@ def main() -> int:
         trig.stop()
         print("\nbye")
     return 0
+
+
+def _voice_selftest(path: str) -> int:
+    """For support and for checking a packaged build: speech file in, words out (uses the speech model already on this PC)."""
+    import wave
+
+    import numpy as np
+    from consiz import voice
+    from consiz.dictation import DictationEngine
+    if not voice.available():
+        print("voice: NOT INCLUDED in this build")
+        return 2
+    if not voice.model_cached():
+        print(f"voice: speech model '{voice.model_name()}' is not on this PC yet")
+        return 3
+    with wave.open(path) as w:
+        sr, ch, raw = w.getframerate(), w.getnchannels(), w.readframes(w.getnframes())
+    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    if ch > 1:
+        audio = audio.reshape(-1, ch).mean(axis=1)
+    if sr != 16000:
+        audio = np.interp(np.linspace(0, len(audio) - 1, int(len(audio) * 16000 / sr)), np.arange(len(audio)), audio).astype(np.float32)
+    res = DictationEngine().transcribe(audio)
+    print(f"voice: heard {res.text!r} ({res.language_name}, {res.language_probability:.0%})")
+    return 0 if res.text else 1
 
 
 def _fatal(exc: BaseException) -> int:

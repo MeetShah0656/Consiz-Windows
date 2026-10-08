@@ -11,7 +11,7 @@ Consiz is a silent desktop assistant. Two ways in, one chat window out:
 
 Both end in the same chat popup (follow-ups, per-message copy, minimize, new chat). The AI can *suggest* one-click buttons (open Storage settings…) but never acts by itself.
 
-**Non-goals (for now):** voice input (built, hidden), sending messages/emails for the user, killing processes, always-on screen recording, mobile global capture (impossible on iOS), self-hosted models for users.
+**Non-goals (for now):** sending messages/emails for the user, killing processes, always-on screen recording, mobile global capture (impossible on iOS), self-hosted models for users.
 
 ## 2. Principles (non-negotiable — extends the 7 rules in the architecture doc)
 
@@ -121,6 +121,7 @@ One table: `usage(sub TEXT, email TEXT, day TEXT, n INTEGER, PRIMARY KEY(sub, da
 | Read inside a window | that window's text (redacted, capped) | per-window box, once per session |
 | Picture fallback | a JPEG of that one window | same box, says "cannot be redacted" |
 | Action button | nothing (opens a local screen) | the click |
+| Voice (optional) | nothing: the audio stays on the PC; only the words spoken are sent, like a typed question | the user presses the mic button / shortcut |
 | Always blocked | password managers, remote desktop, titles with password/bank/incognito/wallet/OTP | — |
 
 ## 9. Threat model (short)
@@ -192,6 +193,7 @@ Failure behaviour: server unreachable → friendly retry text; 401 → sign in a
 | Updates | `GET /version` (LATEST_VERSION, MIN_VERSION, DOWNLOAD_URL from server settings); app asks daily, shows a tray "Download" item, never installs by itself; `MIN_VERSION` makes the server refuse old apps with HTTP 426 | `consiz/updater.py`, `server/app.py` |
 | Server concurrency | async answer route (httpx), Google keys cached, DB wait-not-fail, idle-memory clean-up; `scripts/load_test.py` measures it with a fake AI (no cost) | `server/app.py`, `scripts/load_test.py` |
 | Responsive UI | the line being written is shown live and replaced by the final line (`live_preview`, throttled to ~16/s; KIND/READ/ACTION lines never shown); "thinking" line while waiting; every window sizes itself with `dpi.fit_size` for the screen it opens on, Settings tabs scroll only when needed, bubbles/notes re-wrap on resize, resizing is clamped to the screen | `platform/win32/popup.py`, `settings.py`, `dpi.py` |
+| Voice dictation | speech is turned into text ON THE PC (faster-whisper); mic button in the popup, Ctrl+Alt+D (selection = spoken instruction, nothing selected = spoken question about the PC), stops by itself after a pause; the speech model is NOT inside the app: one-time download with consent and size shown, progress and cancel; Settings: on/off, model size, shortcut; the audio is never uploaded or saved | `consiz/voice.py`, `consiz/dictation.py`, `popup.py`, `main.py` |
 | Installer | Inno Setup script (per-user, no admin, same autostart key as the tray) + build script. **Never built yet; unsigned** | `installer/consiz.iss`, `scripts/build_installer.py` |
 
 Still open from §13: macOS port of PC mode/chat, Android/iOS clients, plans + billing, background watcher and confirm-first actions (T-12: conflicts with the non-goal "killing processes" above, so it needs a product decision), teammate verification, installer build + signing, compatibility matrix (WIN-010), Render in Singapore.

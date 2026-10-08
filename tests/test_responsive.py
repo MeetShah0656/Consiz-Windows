@@ -140,7 +140,7 @@ def test_settings_notes_follow_the_window_width(tk_root, monkeypatch, tmp_path):
     monkeypatch.setattr(prefs, "STORE", tmp_path / "prefs.json")
     st, win = _open_settings(tk_root, monkeypatch, BIG, tab=1)
     try:
-        notes = [n for n in st._NOTES if n.winfo_ismapped()]
+        notes = [n for n in st._NOTES if n.winfo_viewable()]            # only the tab that is showing
         assert notes
         before = int(notes[0].cget("wraplength"))
         win.geometry(f"{win.winfo_width() + 300}x{win.winfo_height()}")

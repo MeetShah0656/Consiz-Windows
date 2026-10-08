@@ -152,7 +152,7 @@ class Config:
     dictate_sample_rate: int = 16000
     dictate_silence_threshold: float = 0.015
     dictate_silence_duration_s: float = 1.2
-    dictate_auto_stop_on_silence: bool = os.environ.get("CONSIZ_DICTATE_AUTO_STOP", "").lower() in ("1", "true", "yes")
+    dictate_auto_stop_on_silence: bool = os.environ.get("CONSIZ_DICTATE_AUTO_STOP", "1").lower() in ("1", "true", "yes")   # stops by itself after a pause
     dictate_max_duration_s: float = float(os.environ.get("CONSIZ_DICTATE_MAX_DURATION", "120.0"))
 
     # --- Answer language ---
@@ -171,5 +171,7 @@ from .languages import normalize as _norm_lang
 CONFIG.answer_language = _norm_lang(_prefs.get("answer_language") or os.environ.get("ANSWER_LANGUAGE", "auto"))
 CONFIG.hotkey = os.environ.get("CONSIZ_HOTKEY") or _prefs.get("hotkey_explain") or CONFIG.hotkey
 CONFIG.pc_hotkey = os.environ.get("CONSIZ_PC_HOTKEY") or _prefs.get("hotkey_pc") or "<ctrl>+<alt>+a"
+CONFIG.dictate_hotkey = os.environ.get("CONSIZ_DICTATE_HOTKEY") or _prefs.get("hotkey_dictate") or "<ctrl>+<alt>+d"
+CONFIG.whisper_model = os.environ.get("WHISPER_MODEL") or _prefs.get("whisper_model") or "small"
 CONFIG.provider = os.environ.get("CONSIZ_PROVIDER") or _prefs.get("provider") or "openrouter"
 CONFIG.ollama_model = os.environ.get("CONSIZ_OLLAMA_MODEL") or _prefs.get("ollama_model") or CONFIG.ollama_model

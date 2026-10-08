@@ -390,6 +390,13 @@ class DictationEngine:
         )
 
 
+def reset_engine() -> None:
+    """Forget the loaded model (after Settings changed which model to use); the next dictation loads the new one."""
+    global _ENGINE
+    with _ENGINE_LOCK:
+        _ENGINE = None
+
+
 def get_dictation_engine() -> DictationEngine:
     """Get or create singleton DictationEngine."""
     global _ENGINE

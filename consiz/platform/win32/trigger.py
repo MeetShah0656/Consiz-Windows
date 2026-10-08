@@ -17,7 +17,7 @@ from typing import Callable
 import psutil
 from pynput import keyboard
 
-from consiz import pause, prefs
+from consiz import pause, prefs, voice
 from consiz.config import CONFIG
 from consiz.platform.win32 import mousegate
 from consiz.platform.win32.priority import set_high_priority, set_thread_high_priority
@@ -179,7 +179,7 @@ class Trigger:
 
     def _desired_hotkeys(self) -> dict[str, tuple[int, str]]:
         want = {"hotkey": (HOTKEY_ID, CONFIG.hotkey)}
-        if self._on_dictate and getattr(CONFIG, "dictate_hotkey", ""):
+        if self._on_dictate and getattr(CONFIG, "dictate_hotkey", "") and voice.enabled():     # Settings can switch voice off
             want["dictate"] = (HOTKEY_DICTATE_ID, CONFIG.dictate_hotkey)
         if self._on_pc and getattr(CONFIG, "pc_hotkey", ""):
             want["pc"] = (HOTKEY_PC_ID, CONFIG.pc_hotkey)

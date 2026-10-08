@@ -14,9 +14,10 @@ import tkinter as tk
 from tkinter import font as tkfont
 from typing import Callable
 
-from consiz import prefs
+from consiz import prefs, voice
 from consiz.config import CONFIG
-from consiz.dictation import AudioRecorder, get_dictation_engine
+from consiz import dictation as _dictation
+from consiz.dictation import AudioRecorder
 from consiz.llm import (KIND_TITLES, Cancelled, CancelToken, LLMError, SignInRequired, current_token, take_note,
                         use_token)
 from consiz.models import CapturedContext, CaptureMethod, Result
@@ -40,6 +41,7 @@ from consiz.platform.win32.theme import (
 )
 
 WIDTH = dpi.px(420)
+RECORDING_RED = "#B3261E"         # the microphone button while listening
 PAD = 14
 SW_SHOWNOACTIVATE = 4
 SWP_NOACTIVATE = 0x0010
@@ -183,8 +185,11 @@ class PopupUI:
             max_duration_s=CONFIG.dictate_max_duration_s,
         )
         self._is_dictating = False
+        self._voice_target = "instruction"     # what a finished recording becomes: "instruction" on the selection, or a chat "question"
+        self.on_voice_prepare: Callable[[], bool] | None = None     # set by main: asks to download the speech model if needed
         self._captured_ctx: CapturedContext | None = None
         self.dictate_btn: tk.Label | None = None
+        self.mic_btn: tk.Label | None = None
 
     # ------------------------------------------------------------------ chat UI
     def _build(self) -> None:
@@ -247,6 +252,11 @@ class PopupUI:
         send_btn.bind("<Button-1>", lambda e: self._send_or_stop())
         send_btn.bind("<Enter>", lambda e: send_btn.config(bg=MAROON_600 if not self._chat_busy else MAROON_800))
         send_btn.bind("<Leave>", lambda e: send_btn.config(bg=MAROON_700 if not self._chat_busy else MAROON_900))
+
+        mic_btn = tk.Label(input_row, text="🎙", font=(FONT_TEXT, 11), fg=MAROON_800, bg=CREAM_200, padx=10, pady=5,
+                           cursor="hand2")
+        mic_btn.bind("<Button-1>", lambda e: self._mic_click())
+        self.mic_btn = mic_btn
 
         entry = tk.Text(input_row, font=(FONT_TEXT, 10), fg=MAROON_900, bg=card_bg, insertbackground=MAROON_900,
                         relief="flat", height=1, wrap="word", padx=8, pady=6, highlightthickness=1,
@@ -396,9 +406,9 @@ class PopupUI:
         except Exception:
             pass
 
-    def _set_placeholder(self) -> None:
+    def _set_placeholder(self, text: str | None = None) -> None:
         self.entry.delete("1.0", "end")
-        self.entry.insert("1.0", "Ask about your PC…" if self.mode == "pc" else "Ask a follow-up…")
+        self.entry.insert("1.0", text or ("Ask about your PC…" if self.mode == "pc" else "Ask a follow-up…"))
         self.entry.config(fg=INK_MUTED, height=1)
         self._placeholder_on = True
 
@@ -604,6 +614,10 @@ class PopupUI:
         if self.window is None:
             return
         self.cancel_request(say=False)
+        if self._is_dictating:
+            self._is_dictating = False
+            self._recorder.cancel()
+            self._set_listening(False)
         self._clear_chat()
         self.history.clear()
         self.last_answer = ""
@@ -712,6 +726,7 @@ class PopupUI:
         x, y = dpi.place_near(point, (w, h), area, gap=dpi.px(15))
         self.window.geometry(f"{w}x{h}+{x}+{y}")
 
+        self._refresh_mic()
         # Show without stealing focus (W-07); typing is enabled only when the user clicks the input.
         self._noactivate(True)
         try:
@@ -756,98 +771,148 @@ class PopupUI:
         if self.window is not None:
             self._activate()
 
+    # ------------------------------------------------------------------ voice dictation
+    # Speech is turned into text ON THIS PC (faster-whisper): the audio is never uploaded. Two ways in:
+    #   - the microphone button (or Ctrl+Alt+D with nothing selected): what you say becomes a QUESTION in this chat
+    #   - Ctrl+Alt+D with text selected: what you say is an INSTRUCTION for that text ("translate to Gujarati")
+    def is_listening(self) -> bool:
+        return self._is_dictating
+
+    def _refresh_mic(self) -> None:
+        """Show the microphone button only when voice dictation is part of this build and switched on."""
+        if self.mic_btn is None:
+            return
+        show = voice.enabled()
+        if show and not self.mic_btn.winfo_ismapped():
+            self.mic_btn.pack(side="right", padx=(6, 0), fill="y", after=self.send_btn)
+        elif not show and self.mic_btn.winfo_ismapped():
+            self.mic_btn.pack_forget()
+
+    def _set_listening(self, on: bool) -> None:
+        if self.mic_btn is not None:
+            self.mic_btn.config(text="■" if on else "🎙", bg=RECORDING_RED if on else CREAM_200,
+                                fg=CREAM_50 if on else MAROON_800)
+        if self._placeholder_on:
+            self._set_placeholder("Listening… speak, then pause" if on else None)
+
     def _on_audio_level(self, rms: float) -> None:
         if not self._is_dictating:
             return
         bars = min(12, int(rms * 120))
         meter = "█" * bars + "░" * (12 - bars)
-        _dispatch(self._set_meta, f"🎙 Listening [{meter}] · Click '✓ Done' (or Ctrl+Alt+D) when finished")
+        _dispatch(self._set_meta, f"🎙 Listening [{meter}] · pause when you are done, or press ■")
 
     def _on_auto_stop(self) -> None:
         if self._is_dictating:
             _dispatch(self.stop_dictation)
 
-    def toggle_dictation(self) -> None:
+    def _mic_click(self) -> None:
+        """The microphone button: start listening, or stop now."""
         if self._is_dictating:
             self.stop_dictation()
-        else:
-            ctx = self._captured_ctx or CapturedContext("active", CaptureMethod.TEXT_SELECTION, self.context)
-            self.start_dictation_flow(ctx)
+            return
+        if self._chat_busy:
+            return
+        threading.Thread(target=self._start_mic_worker, name="consiz-mic", daemon=True).start()
 
-    def start_dictation_flow(self, ctx: CapturedContext, at=None) -> None:
-        point = at or _get_cursor_pos()
-        self._captured_ctx = ctx
-        self.context = ctx.raw_content
-        self._is_dictating = True
+    def _start_mic_worker(self) -> None:
+        ok = self.on_voice_prepare() if self.on_voice_prepare else True       # may ask once to download the speech model
+        if ok:
+            _dispatch(self.begin_voice_question)
 
-        _dispatch(self._show_at, point, "🎙 Dictate Command", "Listening... click '✓ Done' when finished")
-        hints = [
-            ("- 🎙 Listening for your voice instruction...", False),
-            ("- Speak what you want to do with the selected text:", True),
-            ("  • 'Summarize this in 3 bullets'", True),
-            ("  • 'Translate this into Gujarati / Spanish / Hindi'", True),
-            ("  • 'Explain what this code does'", True),
-            ("  • 'Draft a professional email reply'", True),
-            ("  • 'Copy to clipboard'", True),
-            ("- Click '✓ Done' (or press Ctrl+Alt+D) when you are done speaking.", False),
-        ]
-        _dispatch(self._set_lines, hints)
-        if self.dictate_btn:
-            _dispatch(self.dictate_btn.config, {"text": "✓ Done", "fg": "#10b981"})
+    def begin_voice_question(self) -> None:
+        """Listen; what is said becomes a question in this chat (UI thread)."""
+        self._voice_target = "question"
+        self._begin_recording()
 
+    def _begin_recording(self) -> None:
+        if self._is_dictating:
+            return
         try:
             self._recorder.start(on_level=self._on_audio_level, on_auto_stop=self._on_auto_stop)
         except Exception as e:
             self._is_dictating = False
-            fg_col = "#111111" if self.light else "#f0f2f5"
-            if self.dictate_btn:
-                _dispatch(self.dictate_btn.config, {"text": "🎙 Dictate", "fg": fg_col})
-            _dispatch(self._set_title, "Microphone Error")
-            _dispatch(self._set_meta, "No active audio input device")
-            _dispatch(self._set_lines, [
-                ("- Could not start recording: " + str(e), False),
-                ("- Please connect or enable a microphone in Windows Sound Settings and try again.", True),
-            ])
+            self._set_listening(False)
+            self._set_meta("Microphone problem")
+            self._append("⚠ " + _mic_error_text(e))
             return
+        self._is_dictating = True
+        self._set_listening(True)
+        self._set_meta("🎙 Listening… speak, then pause")
+
+    def toggle_dictation(self) -> None:
+        if self._is_dictating:
+            self.stop_dictation()
+        else:
+            self.begin_voice_question()
+
+    def start_dictation_flow(self, ctx: CapturedContext, at=None) -> None:
+        """Ctrl+Alt+D with text selected (worker thread): listen for what to do with that text."""
+        point = at or _get_cursor_pos()
+        self._captured_ctx = ctx
+        self.context = ctx.raw_content
+        self.mode = "selection"
+        self._voice_target = "instruction"
+        _dispatch(self._show_at, point, "🎙 Voice", "Speak what to do with the selected text")
+        _dispatch(self._set_lines, [
+            ("- Speak what to do with the selected text, then pause:", False),
+            ("  • 'Summarize this in 3 bullets'", True),
+            ("  • 'Translate this into Gujarati / Hindi / Spanish'", True),
+            ("  • 'Explain what this code does'", True),
+            ("  • 'Draft a polite reply'", True),
+            ("  • 'Copy to clipboard'", True),
+            ("- It stops by itself when you pause (or press Ctrl+Alt+D / ■).", False),
+        ])
+        _dispatch(self._begin_recording)
 
     def stop_dictation(self) -> None:
+        """Stop listening and turn the speech into text on this PC, then use it (any thread)."""
         if not self._is_dictating:
             return
         self._is_dictating = False
-        fg_col = MAROON_800
-        if self.dictate_btn:
-            _dispatch(self.dictate_btn.config, {"text": "🎙 Dictate", "fg": fg_col})
-
         audio = self._recorder.stop()
-        _dispatch(self._set_title, "⚡ Transcribing...")
-        _dispatch(self._set_meta, "faster-whisper transcribing speech to command...")
+        question = self._voice_target == "question"
+        _dispatch(self._set_listening, False)
+        _dispatch(self._set_meta, "⚡ Understanding what you said…")
+        if not question:
+            _dispatch(self._set_title, "⚡ Transcribing...")
 
-        def _transcribe_and_run():
-            engine = get_dictation_engine()
-            res = engine.transcribe(audio)
-            if not res.text:
-                _dispatch(self._set_title, "No Speech Detected")
-                _dispatch(self._set_meta, "Try speaking again or use 'Ask'")
-                _dispatch(self._set_lines, [
-                    ("- No clear speech was detected from your microphone.", False),
-                    ("- Click '🎙 Dictate' or press Ctrl+Alt+D and speak clearly in any language.", True),
-                ])
+        def work():
+            try:
+                res = _dictation.get_dictation_engine().transcribe(audio)   # looked up each time: Settings may have changed the model
+            except Exception as e:
+                from consiz import logs
+                logs.exception("transcribe")
+                _dispatch(self._set_meta, "Voice problem")
+                _dispatch(self._append, "⚠ Could not turn your speech into text: " + str(e)[:120])
                 return
-
+            if not res.text:
+                _dispatch(self._set_meta, "Nothing heard")
+                if question:
+                    _dispatch(self._append, "I did not hear anything. Tap the 🎙 button and try again.", True)
+                else:
+                    _dispatch(self._set_title, "No Speech Detected")
+                    _dispatch(self._set_lines, [
+                        ("- No clear speech was detected from your microphone.", False),
+                        ("- Press Ctrl+Alt+D again and speak after the sound level moves.", True),
+                    ])
+                return
+            if question:
+                _dispatch(self._ask_text, res.text.strip())            # shows what was heard, then answers it
+                return
             lang_badge = f"[{res.language_name}] " if res.language != "en" else ""
             clean_text = res.text.strip()
-            disp_title = f"🎙 {lang_badge}\"{clean_text[:30]}...\"" if len(clean_text) > 30 else f"🎙 {lang_badge}\"{clean_text}\""
+            disp_title = (f"🎙 {lang_badge}\"{clean_text[:30]}...\"" if len(clean_text) > 30
+                          else f"🎙 {lang_badge}\"{clean_text}\"")
             _dispatch(self._set_title, disp_title)
             _dispatch(self._set_meta, f"Language: {res.language_name} ({res.language_probability:.0%}) · Processing...")
-
             if self.on_dictate:
                 self.on_dictate(self._captured_ctx, res)
             else:
                 from consiz.router import process_dictation
-                result = process_dictation(self._captured_ctx, res)
-                self.show_result(result)
+                self.show_result(process_dictation(self._captured_ctx, res))
 
-        threading.Thread(target=_transcribe_and_run, name="whisper-transcribe-worker", daemon=True).start()
+        threading.Thread(target=work, name="whisper-transcribe-worker", daemon=True).start()
 
     def hide(self) -> None:
         def _do_hide():
@@ -855,6 +920,7 @@ class PopupUI:
             if self._is_dictating:
                 self._is_dictating = False
                 self._recorder.cancel()
+                self._set_listening(False)
             if self.window is not None:
                 self.window.withdraw()
                 self._noactivate(True)
@@ -1182,6 +1248,11 @@ def _close_stream(stream) -> None:
             close()
         except Exception:
             pass
+
+
+def _mic_error_text(e: Exception) -> str:
+    return (f"Could not start the microphone ({str(e)[:100]}). Check that a microphone is connected and that Windows "
+            "allows desktop apps to use it: Settings > Privacy & security > Microphone.")
 
 
 def _friendly_error(detail: str) -> str:

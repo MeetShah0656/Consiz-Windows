@@ -41,7 +41,7 @@ Audited 2026-10-07 against the code. "Verified" = I ran/grepped it; nothing here
 | T-17 | Keyboard/accessibility: tab order, screen-reader labels, high contrast, text scaling | accessibility pass on popup, login, settings | M |
 | T-18 | UI text is English-only (answers are localized) | string table, Hindi first | M |
 | T-19 | Product name is mixed "Conciz" / "Consiz" in UI strings and code | one name everywhere + test that greps for the wrong one | XS |
-| T-20 | Hidden dictation code is a maintenance risk | either re-enable behind a setting or remove it | S |
+| T-20 | ✅ **DONE 2026-10-08 (WIN-035)** — voice dictation re-enabled properly (mic button, Ctrl+Alt+D, Settings on/off, consented model download, packaged into the exe). Hidden dictation code is a maintenance risk | either re-enable behind a setting or remove it | S |
 | T-21 | Real-exe checks are manual (I ran them ad hoc): login window, hotkey, PC chat, consent box | turn them into `scripts/smoke_ui.py`; add GitHub Actions for unit tests + secret scan | M |
 
 ## P2 — later
