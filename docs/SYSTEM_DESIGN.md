@@ -110,7 +110,7 @@ Config (Render env): `OPENROUTER_API_KEY`, `GOOGLE_CLIENT_ID`, `DATABASE_URL` (N
 
 ## 7. Data model & retention
 
-One table: `usage(sub TEXT, email TEXT, day TEXT, n INTEGER, PRIMARY KEY(sub, day))` (+ rows keyed `ip:<address>`). Nothing else is stored server-side: **no prompts, answers, window text or pictures are persisted**. Client keeps: `~/.consiz/session.json` (profile only), refresh token in Credential Manager, prefs, `consiz.log` (no secrets), optional `profile.md`. Deletion = email request (usage rows) + Sign out (client).
+One table: `usage(sub TEXT, email TEXT, day TEXT, n INTEGER, PRIMARY KEY(sub, day))` (+ rows keyed `ip:<address>`) and `spend(day, sub, model, calls, tokens_in, tokens_out, cost_usd, unmetered, PRIMARY KEY(day, sub, model))` = what the AI really cost, read by `scripts/spend_report.py`. Nothing else is stored server-side: **no prompts, answers, window text or pictures are persisted**. Client keeps: `~/.consiz/session.json` (profile only), refresh token in Credential Manager, prefs, `consiz.log` (no secrets), optional `profile.md`. Deletion = email request (usage rows) + Sign out (client).
 
 ## 8. Privacy & permission matrix (what leaves the PC)
 

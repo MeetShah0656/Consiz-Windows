@@ -255,3 +255,53 @@ def test_default_models_are_the_measured_fast_ones(client):
     models = client.sent["payload"]["models"]
     assert models[0] == "nvidia/nemotron-3-super-120b-a12b:free" and models[1].endswith("ling-3.0-flash-sante:free")
     assert models[-1] == srv.AUTO_ROUTER
+
+
+# ---------------------------------------------------------------- real cost per answer (spend table)
+def _spend_rows():
+    import sqlite3
+    con = sqlite3.connect(srv.SQLITE_PATH)
+    try:
+        return con.execute("SELECT sub, model, calls, tokens_in, tokens_out, cost_usd, unmetered FROM spend").fetchall()
+    finally:
+        con.close()
+
+
+def test_answer_cost_is_recorded_from_the_last_stream_chunk(client, monkeypatch):
+    class WithUsage(_FakeUpstream):
+        def iter_content(self, chunk_size=None):
+            yield b'data: {"choices":[{"delta":{"content":"hi"}}],"usage":null}\n\n'
+            # the counts arrive split across two network chunks: they must still be read
+            yield b'data: {"model":"vendor/real-model","choices":[],"usage":{"prompt_tokens":1200,'
+            yield b'"completion_tokens":150,"cost":0.00042}}\n\ndata: [DONE]\n\n'
+
+    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: WithUsage())
+    r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert r.status_code == 200 and "hi" in r.text and "real-model" in r.text       # the app still gets every byte
+    assert _spend_rows() == [("u1", "vendor/real-model", 1, 1200, 150, 0.00042, 0)]
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert _spend_rows()[0][2:5] == (2, 2400, 300)                                  # same row, added up
+
+
+def test_answer_without_counts_is_marked_unmetered(client):
+    assert client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code == 200
+    (_sub, _model, calls, tin, tout, cost, unmetered), = _spend_rows()
+    assert (calls, tin, tout, cost, unmetered) == (1, 0, 0, 0.0, 1)
+
+
+def test_server_adds_no_deprecated_usage_flag(client):
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert "usage" not in client.sent["payload"] and "stream_options" not in client.sent["payload"]
+
+
+def test_spend_table_failure_never_breaks_an_answer(client, monkeypatch):
+    real = srv._run_db
+
+    def broken_for_spend(work):
+        if getattr(work, "__name__", "") == "work":                                   # only the spend writer
+            raise RuntimeError("disk full")
+        return real(work)
+
+    monkeypatch.setattr(srv, "_run_db", broken_for_spend)
+    r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert r.status_code == 200 and "hi" in r.text

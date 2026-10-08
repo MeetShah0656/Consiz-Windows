@@ -25,6 +25,7 @@ Audited 2026-10-07 against the code. "Verified" = I ran/grepped it; nothing here
 | T-24 | Server added ~2.5 s per request: new database connection each time + 4 round trips + table check on every request | ✅ pooled connections, table created once, both limits counted in 1 statement; if the database is down the server keeps answering with in-memory limits (T-03 done) |
 | T-25 | App opened a new secure connection per question and paid a 2.6 s Google token refresh on the first question | ✅ one kept-alive connection, token refreshed at startup and 5 min before expiry, server pinged every 8 min so it never sleeps while the app runs |
 | T-26 | Render service is in the US while users are in India and the database is in Singapore (every request crosses the world twice) | OPEN — re-create the Render service in **Singapore**; expected to save roughly 1–2 s per answer. Needs a new Render service (region cannot be changed) |
+| T-27 | We could not tell what an answer really costs (server only counted answers) | ✅ server now stores tokens in/out + cost per user/day/model (`spend` table, counts only) and `scripts/spend_report.py` prices real usage on paid models. Free models show $0 but tokens are real. Needs server redeploy |
 
 ## P1 — what makes it good, not just working
 

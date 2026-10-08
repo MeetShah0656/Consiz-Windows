@@ -15,6 +15,7 @@ Env (optional): OPENROUTER_MODEL, OPENROUTER_FALLBACKS, MAX_OUTPUT_TOKENS (5000)
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -53,6 +54,9 @@ _schema_ready = {"done": False}
 _mem_counts: dict[tuple[str, str], int] = defaultdict(int)       # fallback only: (key, day) -> n
 _mem_lock = threading.Lock()
 _SCHEMA = "CREATE TABLE IF NOT EXISTS usage (sub TEXT, email TEXT, day TEXT, n INTEGER, PRIMARY KEY (sub, day))"
+# What the AI really cost: one row per (day, user, model). Token counts only: no prompt, answer or picture is stored.
+_SPEND_SCHEMA = ("CREATE TABLE IF NOT EXISTS spend (day TEXT, sub TEXT, model TEXT, calls INTEGER, tokens_in BIGINT, "
+                 "tokens_out BIGINT, cost_usd DOUBLE PRECISION, unmetered INTEGER, PRIMARY KEY (day, sub, model))")
 
 
 def _use_pg() -> bool:
@@ -84,6 +88,7 @@ def _db():
             cur = con.cursor()
             if not _schema_ready["done"]:
                 cur.execute(_SCHEMA)
+                cur.execute(_SPEND_SCHEMA)
                 con.commit()
                 _schema_ready["done"] = True
             yield cur, "%s"
@@ -103,6 +108,7 @@ def _db():
         try:
             cur = con.cursor()
             cur.execute(_SCHEMA)
+            cur.execute(_SPEND_SCHEMA)
             yield cur, "?"
             con.commit()
         except Exception:
@@ -187,6 +193,57 @@ def _refund_quota(info: dict, ip: str) -> None:
             [day] + keys))
     except Exception:
         pass
+
+
+# ------------------------------------------------------------------ real cost per answer
+class _UsageTap:
+    """Reads the token counts OpenRouter always puts in the last chunk of a stream (no request flag needed; the old
+    `usage: {include: true}` is deprecated). It only watches: the bytes are relayed to the app unchanged."""
+
+    def __init__(self):
+        self.buf, self.usage, self.model = b"", None, ""
+
+    def feed(self, chunk: bytes) -> None:
+        self.buf += chunk
+        *lines, self.buf = self.buf.split(b"\n")
+        if len(self.buf) > 1_000_000:                       # a line that never ends is not an SSE stream
+            self.buf = b""
+        for line in lines:
+            line = line.strip()
+            if not line.startswith(b"data:") or b'"usage"' not in line:
+                continue
+            try:
+                obj = json.loads(line[5:])
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("usage"), dict):
+                self.usage = obj["usage"]
+                self.model = str(obj.get("model") or self.model)
+
+
+def _record_spend(sub: str, model: str, tap: _UsageTap) -> None:
+    """Add this answer's tokens and cost to today's row. Never raises: a bookkeeping problem must not hurt an answer."""
+    u = tap.usage or {}
+    tin, tout = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+    try:
+        cost = float(u.get("cost") or 0.0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    unmetered = 0 if tap.usage else 1                       # client left early / provider sent no counts
+    day, name = _today(), (tap.model or model)[:120]
+
+    def work(cur, ph):
+        cur.execute(
+            f"INSERT INTO spend (day, sub, model, calls, tokens_in, tokens_out, cost_usd, unmetered) "
+            f"VALUES ({ph},{ph},{ph},1,{ph},{ph},{ph},{ph}) ON CONFLICT(day, sub, model) DO UPDATE SET "
+            f"calls = spend.calls + 1, tokens_in = spend.tokens_in + excluded.tokens_in, "
+            f"tokens_out = spend.tokens_out + excluded.tokens_out, cost_usd = spend.cost_usd + excluded.cost_usd, "
+            f"unmetered = spend.unmetered + excluded.unmetered", [day, sub, name, tin, tout, cost, unmetered])
+
+    try:
+        _run_db(work)
+    except Exception as e:
+        print(f"[server] could not record spend ({type(e).__name__})", flush=True)
 
 
 # ------------------------------------------------------------------ AI models: self-healing list
@@ -364,7 +421,8 @@ def privacy():
         "<li><b>Google account information:</b> when you sign in with Google we receive your name, email address "
         "and a unique Google account ID. We never receive your Google password.</li>"
         "<li><b>Usage counts:</b> the number of answers you request each day, linked to your Google account ID "
-        "and email, plus a daily count per network (IP address) to prevent abuse.</li>"
+        "and email, plus a daily count per network (IP address) to prevent abuse. We also keep, per day, how many "
+        "AI tokens (units of text size) your answers used and what they cost us; never the text itself.</li>"
         "<li><b>Content you choose to send:</b> the text (or file excerpt) you select and the follow-up questions "
         "you type are sent through our server to an AI provider to produce your answer.</li>"
         "<li><b>\"Ask about my PC\" (optional, only after you allow it):</b> when you ask a question in this mode, "
@@ -478,12 +536,16 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
         raise HTTPException(502 if upstream.status_code >= 500 else upstream.status_code,
                             f"AI provider error ({upstream.status_code}).")
 
+    tap = _UsageTap()
+
     def relay():
         try:
             for chunk in upstream.iter_content(chunk_size=None):
+                tap.feed(chunk)
                 yield chunk
         finally:
             upstream.close()
+            _record_spend(info["sub"], models[0], tap)
 
     return StreamingResponse(relay(), media_type="text/event-stream")
 
