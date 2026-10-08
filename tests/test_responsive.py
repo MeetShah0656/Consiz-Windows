@@ -79,7 +79,7 @@ def test_resizing_is_limited_to_the_screen(tk_root, monkeypatch):
         left, top, right, bottom = ui._area()
         assert (left, top, right, bottom) == SMALL
         # the grip handler is a closure; drive it through the real widgets like a user would
-        grip = [w for w in _find(ui.window, "Label") if w.cget("text") == "⋰"][0]
+        grip = [w for w in _find(ui.window, "Label") if w.cget("text") == "◢"][0]
         grip.event_generate("<Button-1>", x=1, y=1, rootx=300, rooty=300)
         grip.event_generate("<B1-Motion>", x=1, y=1, rootx=9000, rooty=9000)
         _pump(tk_root, 0.3)
@@ -162,5 +162,107 @@ def test_sign_in_window_is_centred_inside_a_small_screen(tk_root, monkeypatch):
         x, y, w, h = ui.window.winfo_x(), ui.window.winfo_y(), ui.window.winfo_width(), ui.window.winfo_height()
         assert x >= 0 and y >= 0 and x + w <= SMALL[2] and y + h <= SMALL[3], (x, y, w, h)
         assert abs((x + w / 2) - SMALL[2] / 2) < 30, "horizontally centred"
+    finally:
+        ui.window.destroy()
+
+
+# ---------------------------------------------------------------- the answer window resizes from every edge and corner
+def test_edges_and_corners_are_found_from_the_window_borders():
+    from consiz.platform.win32.popup import edges_at
+    assert edges_at(0, 100, 500, 400, 7) == "l"
+    assert edges_at(499, 100, 500, 400, 7) == "r"
+    assert edges_at(250, 0, 500, 400, 7) == "t"
+    assert edges_at(250, 399, 500, 400, 7) == "b"
+    assert edges_at(2, 3, 500, 400, 7) == "lt"
+    assert edges_at(498, 3, 500, 400, 7) == "rt"
+    assert edges_at(2, 398, 500, 400, 7) == "lb"
+    assert edges_at(498, 398, 500, 400, 7) == "rb"
+    assert edges_at(250, 200, 500, 400, 7) == ""
+
+
+def test_dragging_an_edge_moves_only_that_edge():
+    from consiz.platform.win32.popup import resized_box
+    area, small = (0, 0, 2000, 1200), (300, 250)
+    box = (400, 300, 500, 400)
+    assert resized_box(box, "r", 100, 50, small, area) == (400, 300, 600, 400)          # wider, nothing else moves
+    assert resized_box(box, "b", 100, 50, small, area) == (400, 300, 500, 450)
+    assert resized_box(box, "l", -100, 50, small, area) == (300, 300, 600, 400)         # left edge out: x moves, right edge stays
+    assert resized_box(box, "t", 20, -80, small, area) == (400, 220, 500, 480)
+    assert resized_box(box, "lt", -50, -50, small, area) == (350, 250, 550, 450)
+    assert resized_box(box, "rb", 10, 10, small, area) == (400, 300, 510, 410)
+
+
+def test_dragging_cannot_make_the_window_tiny_or_leave_the_screen():
+    from consiz.platform.win32.popup import resized_box
+    area, small = (0, 0, 1000, 800), (300, 250)
+    box = (400, 300, 500, 400)
+    x, y, w, h = resized_box(box, "l", 900, 0, small, area)                             # dragged far to the right
+    assert w == 300 and x + w == 900, (x, w)                                            # stops at the minimum, right edge fixed
+    x, y, w, h = resized_box(box, "t", 0, 900, small, area)
+    assert h == 250 and y + h == 700
+    x, y, w, h = resized_box(box, "rb", 5000, 5000, small, area)                        # dragged off the screen
+    assert x + w == 1000 and y + h == 800
+    x, y, w, h = resized_box(box, "lt", -5000, -5000, small, area)
+    assert x == 0 and y == 0 and x + w == 900 and y + h == 700
+
+
+def _drag(widget, start, end):
+    widget.event_generate("<Button-1>", x=1, y=1, rootx=start[0], rooty=start[1])
+    widget.event_generate("<B1-Motion>", x=1, y=1, rootx=end[0], rooty=end[1])
+    widget.event_generate("<ButtonRelease-1>", x=1, y=1, rootx=end[0], rooty=end[1])
+
+
+def test_the_user_can_drag_each_side_of_the_real_window(tk_root, monkeypatch, tmp_path):
+    from consiz import prefs
+    from consiz.platform.win32 import popup as pm
+    _screen(monkeypatch, BIG)
+    monkeypatch.setattr(prefs, "STORE", tmp_path / "prefs.json")             # the dragged size is saved: never to the real file
+    ui = pm.PopupUI()
+    ui.user_size = None
+    try:
+        ui._show_at((900, 400), "Answer", "Chrome")
+        _pump(tk_root, 0.4)
+        win = ui.window
+        x, y, w, h = win.winfo_x(), win.winfo_y(), win.winfo_width(), win.winfo_height()
+        edge = pm.RESIZE_BAND // 2
+        # right edge: press on the plain border strip and pull it 150 px outwards
+        _drag(win, (x + w - edge, y + h // 2), (x + w - edge + 150, y + h // 2))
+        _pump(tk_root, 0.2)
+        assert win.winfo_width() == w + 150 and win.winfo_x() == x, (w, win.winfo_width())
+        # left edge: the window grows to the left and its right edge stays put
+        x2, w2 = win.winfo_x(), win.winfo_width()
+        _drag(win, (x2 + edge, y + h // 2), (x2 + edge - 120, y + h // 2))
+        _pump(tk_root, 0.2)
+        assert win.winfo_width() == w2 + 120 and win.winfo_x() + win.winfo_width() == x2 + w2
+        # bottom-right corner
+        x3, y3, w3, h3 = win.winfo_x(), win.winfo_y(), win.winfo_width(), win.winfo_height()
+        _drag(win, (x3 + w3 - edge, y3 + h3 - edge), (x3 + w3 - edge + 40, y3 + h3 - edge + 60))
+        _pump(tk_root, 0.2)
+        assert (win.winfo_width(), win.winfo_height()) == (w3 + 40, h3 + 60)
+        assert ui.user_size == (w3 + 40, h3 + 60), "the new size is remembered"
+        # the chat text re-flows to the new width
+        chat_w = ui.chat.winfo_width()
+        assert chat_w > w - 60, chat_w
+        assert prefs.get("popup_size") is not None, "saved to the (temporary) prefs when the drag ended"
+    finally:
+        ui.window.destroy()
+
+
+def test_a_click_inside_the_window_does_not_start_a_resize(tk_root, monkeypatch, tmp_path):
+    from consiz import prefs
+    from consiz.platform.win32 import popup as pm
+    _screen(monkeypatch, BIG)
+    monkeypatch.setattr(prefs, "STORE", tmp_path / "prefs.json")
+    ui = pm.PopupUI()
+    ui.user_size = None
+    try:
+        ui._show_at((900, 400), "Answer", "Chrome")
+        _pump(tk_root, 0.4)
+        win = ui.window
+        x, y, w, h = win.winfo_x(), win.winfo_y(), win.winfo_width(), win.winfo_height()
+        _drag(win, (x + w // 2, y + h // 2), (x + w // 2 + 200, y + h // 2 + 200))
+        _pump(tk_root, 0.2)
+        assert (win.winfo_width(), win.winfo_height()) == (w, h)
+        assert ui.user_size is None
     finally:
         ui.window.destroy()

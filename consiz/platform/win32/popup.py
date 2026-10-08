@@ -43,6 +43,7 @@ from consiz.platform.win32.theme import (
 WIDTH = dpi.px(420)
 RECORDING_RED = "#B3261E"         # the microphone button while listening
 PAD = 14
+RESIZE_BAND = dpi.px(7)           # the strip along each edge of the popup that can be dragged to resize it
 SW_SHOWNOACTIVATE = 4
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
@@ -176,6 +177,8 @@ class PopupUI:
         self.window: tk.Toplevel | None = None
         self._lines: list[str] = []
         self.user_size: tuple[int, int] | None = _load_size()     # remembered from the last resize (KI-13)
+        self._resize: tuple | None = None      # a drag in progress: (edges, mouse x, mouse y, window box at the start)
+        self._edge_cursor = ""
         self._start_x = 0
         self._start_y = 0
         self._recorder = AudioRecorder(
@@ -328,7 +331,7 @@ class PopupUI:
         # ---- footer: resize grip + Copy all
         copy_btn = tk.Label(footer, text="Copy all", font=(FONT_TEXT, 8, "bold"), fg=MAROON_800, bg=bg_color,
                             cursor="hand2")
-        copy_btn.pack(side="right")
+        copy_btn.pack(side="left")
 
         def on_copy(e):
             root.clipboard_clear()
@@ -340,23 +343,17 @@ class PopupUI:
         copy_btn.bind("<Enter>", lambda e: copy_btn.config(fg=MAROON_600))
         copy_btn.bind("<Leave>", lambda e: copy_btn.config(fg=MAROON_800))
 
-        grip = tk.Label(footer, text="⋰", font=(FONT_TEXT, 9), fg=sub_color, bg=bg_color, cursor="size_nw_se")
-        grip.pack(side="left")
+        grip = tk.Label(footer, text="◢", font=(FONT_TEXT, 11), fg=MAROON_600, bg=bg_color, cursor="size_nw_se",
+                        padx=2)
+        grip.pack(side="right")
+        grip.bind("<Button-1>", lambda e: self._resize_begin(e, "rb"))
 
-        def start_resize(e):
-            self._start_x, self._start_y = e.x_root, e.y_root
-            self._win_w, self._win_h = win.winfo_width(), win.winfo_height()
-
-        def do_resize(e):
-            left, top, right, bottom = self._area()
-            nw = min(max(dpi.px(320), self._win_w + e.x_root - self._start_x), right - left - 20)
-            nh = min(max(dpi.px(260), self._win_h + e.y_root - self._start_y), bottom - top - 20)
-            self.user_size = (nw, nh)
-            win.geometry(f"{nw}x{nh}")
-
-        grip.bind("<Button-1>", start_resize)
-        grip.bind("<B1-Motion>", do_resize)
-        grip.bind("<ButtonRelease-1>", lambda e: self._save_size())
+        # every edge and corner of the window resizes it (the window has no frame of its own). The toplevel is in the
+        # bindtags of every child, so these see the mouse anywhere; only the plain padding at the border reacts.
+        win.bind("<Motion>", self._resize_hover, add="+")
+        win.bind("<Button-1>", self._resize_press, add="+")
+        win.bind("<B1-Motion>", self._resize_move, add="+")
+        win.bind("<ButtonRelease-1>", lambda e: self._resize_end(), add="+")
 
         # drag the window by its title
         def start_drag(e):
@@ -685,6 +682,44 @@ class PopupUI:
             if y + want > bottom - 10:
                 y = max(top + 10, bottom - want - 10)
             self.window.geometry(f"{w}x{want}+{x}+{y}")
+
+    # ------------------------------------------------------------------ resizing by dragging an edge or corner
+    def _resize_hover(self, e) -> None:
+        if self._resize is not None or self.window is None or self._minimized:
+            return
+        edges = edges_at(e.x_root - self.window.winfo_rootx(), e.y_root - self.window.winfo_rooty(),
+                         self.window.winfo_width(), self.window.winfo_height(), RESIZE_BAND)
+        cursor = _EDGE_CURSORS.get(edges, "")
+        if cursor != self._edge_cursor:
+            self._edge_cursor = cursor
+            self.window.config(cursor=cursor)
+
+    def _resize_press(self, e) -> None:
+        if self._minimized:
+            return
+        edges = edges_at(e.x_root - self.window.winfo_rootx(), e.y_root - self.window.winfo_rooty(),
+                         self.window.winfo_width(), self.window.winfo_height(), RESIZE_BAND)
+        if edges:
+            self._resize_begin(e, edges)
+
+    def _resize_begin(self, e, edges: str) -> None:
+        if self.window is None or self._minimized:
+            return
+        self._resize = (edges, e.x_root, e.y_root, (self.window.winfo_x(), self.window.winfo_y(),
+                                                    self.window.winfo_width(), self.window.winfo_height()))
+
+    def _resize_move(self, e) -> None:
+        if self._resize is None or self.window is None:
+            return
+        edges, x0, y0, box = self._resize
+        x, y, w, h = resized_box(box, edges, e.x_root - x0, e.y_root - y0, (dpi.px(320), dpi.px(260)), self._area())
+        self.user_size = (w, h)                                   # from now on the window keeps the size the user chose
+        self.window.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _resize_end(self) -> None:
+        if self._resize is not None:
+            self._resize = None
+            self._save_size()
 
     def _save_size(self) -> None:
         """Remember the size the user dragged the window to (stored at 100 % scale, so it survives a scale change)."""
@@ -1228,6 +1263,40 @@ def _type_label(content_type: str) -> str:
 
 def _error_title(title: str) -> str:
     return _ERROR_TITLES.get(str(title), title)
+
+
+_EDGE_CURSORS = {"l": "size_we", "r": "size_we", "t": "size_ns", "b": "size_ns",
+                 "lt": "size_nw_se", "rb": "size_nw_se", "rt": "size_ne_sw", "lb": "size_ne_sw"}
+
+
+def edges_at(x: int, y: int, w: int, h: int, band: int) -> str:
+    """Which edges of a w x h window the point (x, y), measured from its top-left corner, touches: 'l', 'r', 't', 'b'
+    (horizontal one first, so a corner is 'lt', 'rt', 'lb' or 'rb'); '' when the point is well inside."""
+    edges = "l" if x < band else "r" if x >= w - band else ""
+    return edges + ("t" if y < band else "b" if y >= h - band else "")
+
+
+def resized_box(box: tuple[int, int, int, int], edges: str, dx: int, dy: int, min_size: tuple[int, int],
+                area: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """The (x, y, w, h) of a window after its `edges` were dragged by (dx, dy): never smaller than min_size, never past
+    the edge of the usable screen `area`, and the edge opposite to the one being dragged stays where it is."""
+    area_l, area_t, area_r, area_b = area
+    x, y, w, h = box
+    right, bottom = x + w, y + h
+    if "r" in edges:
+        right = min(right + dx, max(area_r, right))
+    if "l" in edges:
+        x = max(x + dx, min(area_l, x))
+    if "b" in edges:
+        bottom = min(bottom + dy, max(area_b, bottom))
+    if "t" in edges:
+        y = max(y + dy, min(area_t, y))
+    min_w, min_h = min(min_size[0], area_r - area_l), min(min_size[1], area_b - area_t)
+    if right - x < min_w:
+        x, right = (right - min_w, right) if "l" in edges else (x, x + min_w)
+    if bottom - y < min_h:
+        y, bottom = (bottom - min_h, bottom) if "t" in edges else (y, y + min_h)
+    return x, y, right - x, bottom - y
 
 
 def _load_size() -> tuple[int, int] | None:

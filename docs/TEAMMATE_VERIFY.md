@@ -33,6 +33,7 @@ on one laptop. Your job is to try it for real and write your name in `verified_b
 ## F. Sharp text and screens (WIN-028 — T-06)
 14. Windows Settings > Display > Scale: try **100 %, 125 %, 150 %**. At each, open the answer window, Settings and the sign-in window: text sharp, nothing clipped.
 15. If you have **two monitors** (also try one on the left): middle-click on the second monitor → the window opens **on that monitor**, fully visible, near the cursor.
+15b. Answer window: move the mouse to any **edge or corner** → the cursor changes to a resize arrow; drag → the window resizes (the opposite side stays still), the text re-flows, it cannot become tiny or leave the screen. The ◢ mark at the bottom-right works too. Close and reopen → same size (WIN-036).
 
 ## G. Settings (WIN-029 — T-09)
 16. Tray > Settings…: five tabs open. Change *Answer language* → next answer is in that language.
