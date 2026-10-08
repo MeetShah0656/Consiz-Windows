@@ -565,6 +565,12 @@ class PopupUI:
         self.history.clear()
         self.last_answer = ""
         self._msg_texts.clear()
+        if self.mode == "pc":                              # same screen as when it opened: the starter questions
+            self._pc_note = ""
+            self._set_title("Ask about my PC")
+            self._set_meta("Reads program names, memory use and window titles on this PC")
+            self._pc_intro()
+            return
         self._set_title("New chat")
         self._set_meta("Ask anything about your selected text")
         self._log("Ask a question about the text you selected, or anything else.", "ai_dim")
@@ -597,19 +603,27 @@ class PopupUI:
         y = max(top + 10, min(y, bottom - h - 10))        # never let the restored window run off its monitor
         self.window.geometry(f"{w}x{h}+{x}+{y}")
 
-    def _fit_height(self) -> None:
-        """Grow the window to fit the conversation (until 65% of the screen); never shrink a user-sized one."""
+    def _fit_height(self, _retries: int = 8) -> None:
+        """Grow the window to fit what is in the chat (up to 65% of the screen); never shrink, never touch a window the
+        user resized. The height is measured from the REAL laid-out text. Measuring before the window has been drawn
+        (text added in the same instant the window opens: errors, file/table results, the PC chat's question list)
+        used to give a 1-pixel-wide window or one far taller than its content, so it waits for the layout instead."""
         if self.window is None or self.user_size is not None or self._minimized:
             return
-        try:
-            display_lines = self.chat.count("1.0", "end", "displaylines")
-            n = int(display_lines[0]) if display_lines else len(self._lines)
+        self.window.update_idletasks()
+        if self.window.winfo_width() < 100 or self.chat.winfo_width() < 50:          # not drawn yet: try again shortly
+            if _retries > 0:
+                self.window.after(40, lambda: self._fit_height(_retries - 1))
+            return
+        try:                                                  # pixel height of ALL the text, bubbles included
+            res = self.chat.count("1.0", "end", "update", "ypixels")      # a number, or a 1-tuple, depending on Tk
+            content = int(res[0] if isinstance(res, (tuple, list)) else res)
         except Exception:
-            n = len(self._lines)
-        _l, top, _r, bottom = self._area()
-        want = min(max(dpi.px(200) + n * dpi.px(19), dpi.px(260)), int((bottom - top) * 0.65))
-        cur_h = self.window.winfo_height()
-        if want > cur_h:
+            content = (len(self._lines) + 2) * dpi.px(19)
+        chrome = self.window.winfo_height() - self.chat.winfo_height()   # header, input row, footer, borders
+        left, top, right, bottom = self._area()
+        want = min(max(chrome + content + dpi.px(26), dpi.px(260)), int((bottom - top) * 0.65))
+        if want > self.window.winfo_height():
             x, y, w = self.window.winfo_x(), self.window.winfo_y(), self.window.winfo_width()
             if y + want > bottom - 10:
                 y = max(top + 10, bottom - want - 10)
@@ -860,13 +874,13 @@ class PopupUI:
         t0 = res.started_at or time.perf_counter()
 
         if res.error:
-            _dispatch(self._show_at, point, res.title, res.source_app)
+            _dispatch(self._show_at, point, _error_title(res.title), res.source_app)
             for ln in res.body.splitlines():
                 post(self._append, ln)
             return
 
         deferred = res.content_type.startswith(("FILE", "FOLDER", "CSV_DATA")) and res.stream is not None
-        meta_label = res.source_app if (res.source_app and (res.source_app.startswith(("🌐", "📁", "📄", "🗂")) or " · " in res.source_app)) else (f"{res.source_app} · {res.content_type}" if res.source_app else res.content_type)
+        meta_label = res.source_app if (res.source_app and (res.source_app.startswith(("🌐", "📁", "📄", "🗂")) or " · " in res.source_app)) else (f"{res.source_app} · {_type_label(res.content_type)}" if res.source_app else _type_label(res.content_type))
         initial_title = res.title if res.title != "auto" else ("Web Context" if res.source_app.startswith("🌐") else "…")
         _dispatch(self._show_at, point, initial_title, meta_label)
 
@@ -948,7 +962,7 @@ class PopupUI:
             post(self._set_lines, held)
 
         self.last_answer = text or res.body
-        post(self._set_meta, f"{res.content_type} · {res.source_app} · {time.perf_counter() - t0:.1f}s")
+        post(self._set_meta, f"{_type_label(res.content_type)} · {res.source_app} · {time.perf_counter() - t0:.1f}s")
 
     def _need_login(self) -> None:
         """Sign-in expired or was rejected mid-session: reopen the login window (set by main.py)."""
@@ -1053,6 +1067,23 @@ class PopupUI:
         self.chat.delete(rng[0], rng[1])
         self.chat.insert(start, new_text + chr(10), (style, tag))
         self.chat.config(state="disabled")
+
+
+_TYPE_LABELS = {"TEXT_SELECTION": "Selected text", "QUESTION": "Question", "FILE": "File", "FOLDER": "Folder",
+                "CSV_DATA": "Table", "UNSUPPORTED": "Unsupported", "ACTION": "Done"}
+_ERROR_TITLES = {"NO_CONTEXT_FOUND": "Nothing selected", "AMBIGUOUS_SELECTION": "Unclear selection",
+                 "UNSUPPORTED_CONTENT": "Can't read this", "DATA_MALFORMED": "Can't read this table",
+                 "PROCESSING_TIMEOUT": "Took too long", "SENSITIVE_CONTENT_BLOCKED": "Not sent: looks private",
+                 "BACKEND_UNAVAILABLE": "AI not reachable"}
+
+
+def _type_label(content_type: str) -> str:
+    """'TEXT_SELECTION' -> 'Selected text' (people should not see internal names). Unknown values pass through."""
+    return _TYPE_LABELS.get(content_type, content_type)
+
+
+def _error_title(title: str) -> str:
+    return _ERROR_TITLES.get(str(title), title)
 
 
 def _load_size() -> tuple[int, int] | None:
