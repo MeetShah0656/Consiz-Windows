@@ -26,6 +26,11 @@ RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "Consiz"
 
 
+# Short on purpose. The tray menu sits at the screen edge, and Windows opens a sub-menu on the LEFT when it does not fit
+# on the right: the old long labels (~470 px) made it fly out the wrong way. The details are in Settings > Mouse.
+TRIGGER_LABELS = {"middle": "Middle click", "ctrl_middle": "Ctrl + middle click", "hotkey": "Keyboard only"}
+
+
 def is_autostart_enabled() -> bool:
     """Check if Consiz is registered to start on Windows logon."""
     if sys.platform != "win32":
@@ -287,9 +292,7 @@ class SystemTray:
             from consiz import prefs
             from consiz.platform.win32.mousegate import DEFAULT_MODE, MODES
 
-            labels = {"middle": "Middle click (passes through when nothing is selected)",
-                      "ctrl_middle": "Ctrl + middle click only (never touches normal clicks)",
-                      "hotkey": "Keyboard only (Ctrl+Alt+S / Ctrl+Alt+A)"}
+            labels = TRIGGER_LABELS
 
             def current():
                 import os

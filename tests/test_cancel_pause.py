@@ -283,3 +283,13 @@ def test_followup_stream_stops_midway_and_is_not_remembered(popup):
     assert ui.history == [], "a stopped answer must not enter the chat history"
     assert closed == [True], "the stream must be closed so the connection is released"
     assert "third bullet" not in ui.chat.get("1.0", "end")
+
+
+# ---------------------------------------------------------------- tray menu: sub-menus must open to the right
+def test_trigger_menu_labels_are_short_enough_to_open_on_the_right():
+    """Windows flips a sub-menu to the left when it does not fit beside a tray menu at the screen edge (~470 px free at
+    125 %). Long labels did exactly that; keep them short (the explanation lives in Settings > Mouse)."""
+    from consiz.platform.win32 import mousegate, tray
+    assert set(tray.TRIGGER_LABELS) == set(mousegate.MODES), "every trigger mode has a label"
+    assert max(len(v) for v in tray.TRIGGER_LABELS.values()) <= 24
+    assert all("(" not in v for v in tray.TRIGGER_LABELS.values())
