@@ -73,7 +73,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from server import app as srv  # noqa: E402
-from tests.test_server import BODY, GOOD, _FakeUpstream  # noqa: E402
+from tests.test_server import BODY, GOOD, _FakeUpstream, _opener  # noqa: E402
 
 
 @pytest.fixture
@@ -88,7 +88,7 @@ def client(tmp_path, monkeypatch):
     srv._mem_counts.clear()
     monkeypatch.setattr(srv, "_verify", lambda auth: {"sub": "u1", "email": "a@b.com"} if auth == "Bearer good" else
                         (_ for _ in ()).throw(srv.HTTPException(401, "Sign in required.")))
-    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: _FakeUpstream())
+    monkeypatch.setattr(srv, "_open_upstream", _opener(_FakeUpstream()))
     monkeypatch.setattr(srv, "_live_model_ids", lambda: set())
     return TestClient(srv.app)
 

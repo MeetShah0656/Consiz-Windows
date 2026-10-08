@@ -3,6 +3,11 @@
 The desktop app sends a Google ID token; we verify it (signature, audience, expiry, verified email),
 apply limits, force our own model/limits, and stream the answer back.
 
+Concurrency: the answer route is ASYNC. A streaming answer waits on the AI provider for seconds; it used to hold one of the
+server's ~40 worker threads the whole time, and every request also re-downloaded Google's sign-in keys (~1 s). Now the
+stream costs no thread, the keys are cached for an hour, and only the short blocking jobs (sign-in check, database)
+run in the thread pool. `python scripts/load_test.py` measures it.
+
 Run:  pip install -r server/requirements.txt
       uvicorn server.app:app --host 0.0.0.0 --port 8080
 Env (required): OPENROUTER_API_KEY, GOOGLE_CLIENT_ID (same desktop client the app uses)
@@ -23,10 +28,13 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict, deque
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 
+import anyio
+import httpx
 import requests
+from starlette.concurrency import run_in_threadpool
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from google.auth.transport import requests as g_requests
@@ -35,9 +43,86 @@ from google.oauth2 import id_token as g_id_token
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 SQLITE_PATH = os.environ.get("CONSIZ_SERVER_DB", "conciz_server.db")
 
-app = FastAPI(title="Conciz backend")
-_g_request = g_requests.Request()
+@asynccontextmanager
+async def _lifespan(_app):
+    """Start-up: fetch Google's keys before the first user does (T-15). Shut-down: close the AI provider connections."""
+    try:
+        await run_in_threadpool(lambda: _g_request("https://www.googleapis.com/oauth2/v1/certs"))
+    except Exception:
+        pass
+    yield
+    if _http["client"] is not None:
+        await _http["client"].aclose()
+        _http["client"] = None
+
+
+app = FastAPI(title="Conciz backend", lifespan=_lifespan)
 _recent: dict[str, deque] = defaultdict(deque)      # per-user timestamps for the per-minute limit
+
+
+class _CachedKeys(g_requests.Request):
+    """google-auth downloads Google's signing keys on EVERY sign-in check (about 0.1-1 s, blocking). Keys change every
+    few days and Google says how long they may be reused (Cache-Control: max-age), so they are kept here: one download
+    per hour for the whole server. If Google cannot be reached the last keys are used rather than failing every user."""
+
+    def __init__(self, transport=None):
+        self._transport = transport or g_requests.Request()
+        self._cache: dict[str, tuple[float, object]] = {}
+        self._lock = threading.Lock()
+
+    def __call__(self, url, method="GET", body=None, headers=None, timeout=None, **kwargs):
+        if method != "GET":
+            return self._transport(url, method=method, body=body, headers=headers, timeout=timeout, **kwargs)
+        with self._lock:                                    # one download at a time: no stampede after a restart
+            hit = self._cache.get(url)
+            if hit and hit[0] > time.time():
+                return hit[1]
+            try:
+                resp = self._transport(url, method="GET", body=body, headers=headers, timeout=timeout, **kwargs)
+            except Exception:
+                if hit:
+                    return hit[1]                           # stale keys beat a broken sign-in
+                raise
+            if getattr(resp, "status", 0) == 200:
+                ttl = 3600
+                try:
+                    cc = str((getattr(resp, "headers", {}) or {}).get("cache-control", "") or "")
+                    for part in cc.split(","):
+                        if part.strip().startswith("max-age="):
+                            ttl = int(part.strip().split("=", 1)[1])
+                except (ValueError, TypeError):
+                    pass
+                self._cache[url] = (time.time() + min(max(ttl, 60), 6 * 3600), resp)
+            return resp
+
+
+_g_request = _CachedKeys()
+OPENROUTER_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+_http: dict = {"client": None}
+
+
+def _http_client() -> httpx.AsyncClient:
+    """One shared connection pool to the AI provider (created on first use, inside the running event loop)."""
+    if _http["client"] is None:
+        # Idle connections are dropped after 3 s: providers close idle ones after a few seconds too, and reusing one
+        # that was just closed is the usual cause of a failed first request.
+        _http["client"] = httpx.AsyncClient(timeout=OPENROUTER_TIMEOUT, limits=httpx.Limits(
+            max_connections=1000, max_keepalive_connections=100, keepalive_expiry=3.0))
+    return _http["client"]
+
+
+async def _open_upstream(payload: dict, key: str):
+    """Start the streaming request to the AI provider; returns the (open) response. Tests replace this one function."""
+    client = _http_client()
+    for attempt in (1, 2):
+        request = client.build_request("POST", OPENROUTER_URL, json=payload, headers={
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json", "X-Title": "As Conciz",
+            "Accept-Encoding": "identity"})                  # plain bytes: lowest latency for a stream of tiny chunks
+        try:
+            return await client.send(request, stream=True)
+        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError):
+            if attempt == 2:                                 # a reused connection can turn out to be dead: try once more
+                raise
 
 
 def _cfg(name: str, default: str = "") -> str:
@@ -65,12 +150,16 @@ def _use_pg() -> bool:
     return _cfg("DATABASE_URL").startswith(("postgres://", "postgresql://"))
 
 
+_DB_CONNECTIONS = 10
+_db_slots = threading.BoundedSemaphore(_DB_CONNECTIONS)   # more callers than connections WAIT instead of erroring
+
+
 def _pg_pool():
     with _pool_lock:
         if _pool["p"] is None:
             from psycopg2 import pool
             _pool["p"] = pool.ThreadedConnectionPool(
-                1, 6, _cfg("DATABASE_URL"), connect_timeout=8,
+                1, _DB_CONNECTIONS, _cfg("DATABASE_URL"), connect_timeout=8,
                 keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
         return _pool["p"]
 
@@ -84,7 +173,12 @@ def _db():
     """Yields (cursor, placeholder). Commits on success, rolls back on error."""
     if _use_pg():
         pool = _pg_pool()
-        con = pool.getconn()
+        _db_slots.acquire()
+        try:
+            con = pool.getconn()
+        except BaseException:
+            _db_slots.release()
+            raise
         bad = False
         try:
             cur = con.cursor()
@@ -105,6 +199,7 @@ def _db():
             raise
         finally:
             pool.putconn(con, close=bad or bool(con.closed))
+            _db_slots.release()
     else:
         con = sqlite3.connect(SQLITE_PATH)
         try:
@@ -277,8 +372,20 @@ def _pick_models(preferred: list[str]) -> list[str]:
     return chosen[:2] + [AUTO_ROUTER]          # always keep the safety net; OpenRouter accepts at most 3
 
 
+def _forget_idle_users(now: float) -> None:
+    """Per-user timestamp lists and the in-memory fallback counters would otherwise grow with every user ever seen."""
+    for sub in [s for s, q in _recent.items() if not q or now - q[-1] > 60]:
+        _recent.pop(sub, None)
+    today = _today()
+    with _mem_lock:
+        for key in [k for k in _mem_counts if k[1] != today]:
+            _mem_counts.pop(key, None)
+
+
 def _rate_limit(sub: str) -> None:
     limit, now = int(_cfg("RATE_PER_MIN", "12")), time.time()
+    if len(_recent) > 2000:
+        _forget_idle_users(now)
     q = _recent[sub]
     while q and now - q[0] > 60:
         q.popleft()
@@ -509,9 +616,11 @@ def version():
 
 
 @app.post("/v1/chat/completions")
-def chat(body: dict, request: Request, authorization: str | None = Header(default=None),
-         x_consiz_version: str | None = Header(default=None)):
-    info = _verify(authorization)
+async def chat(body: dict, request: Request, authorization: str | None = Header(default=None),
+               x_consiz_version: str | None = Header(default=None)):
+    # Blocking work (Google sign-in check, database, the model list) runs in the thread pool for a few milliseconds;
+    # the long part, waiting for the AI, is awaited and holds no thread.
+    info = await run_in_threadpool(_verify, authorization)
     _check_app_version(x_consiz_version)
     key = _cfg("OPENROUTER_API_KEY")
     if not key:
@@ -519,7 +628,7 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
     messages = _clean_messages(body.get("messages"))
     ip = _client_ip(request)
     _rate_limit(info["sub"])
-    _take_quota(info, ip)
+    await run_in_threadpool(_take_quota, info, ip)
 
     # The client never picks the model or the budget; the server does.
     cap = int(_cfg("MAX_OUTPUT_TOKENS", "5000"))
@@ -527,12 +636,13 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
     model = _cfg("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
     fallbacks = [m.strip() for m in _cfg("OPENROUTER_FALLBACKS", "inclusionai/ling-3.0-flash-sante:free").split(",")
                  if m.strip()]
-    models = _pick_models([model, *fallbacks])
+    wanted = [model, *fallbacks]
     if _has_images(messages):                       # the server decides from the content, not from a client flag
         vision = _cfg("VISION_MODEL", "google/gemma-4-31b-it:free")
         vfall = [m.strip() for m in _cfg("VISION_FALLBACKS", "google/gemma-4-26b-a4b-it:free,"
                                          "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free").split(",") if m.strip()]
-        models = _pick_models([vision, *vfall])
+        wanted = [vision, *vfall]
+    models = await run_in_threadpool(_pick_models, wanted)
     payload = {
         "model": models[0],
         "models": models,
@@ -543,18 +653,18 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
         "stream": True,
     }
     try:
-        upstream = requests.post(OPENROUTER_URL, json=payload, stream=True, timeout=(10, 60), headers={
-            "Authorization": f"Bearer {key}", "Content-Type": "application/json", "X-Title": "As Conciz"})
-    except requests.RequestException:
-        _refund_quota(info, ip)
+        upstream = await _open_upstream(payload, key)
+    except (httpx.HTTPError, OSError) as e:
+        print(f"[server] AI provider unreachable: {type(e).__name__}: {str(e)[:120]}", flush=True)
+        await run_in_threadpool(_refund_quota, info, ip)
         raise HTTPException(502, "The AI provider is unreachable.")
     if upstream.status_code != 200:
-        _refund_quota(info, ip)
+        await run_in_threadpool(_refund_quota, info, ip)
         try:
-            detail = upstream.text[:600]
+            detail = (await upstream.aread()).decode("utf-8", "ignore")[:600]
         except Exception:
             detail = ""
-        upstream.close()
+        await upstream.aclose()
         if upstream.status_code == 429:
             # The whole product shares ONE OpenRouter key: 50 free-model requests/day (1000 with 10 credits).
             if "free-models-per-day" in detail:
@@ -568,14 +678,15 @@ def chat(body: dict, request: Request, authorization: str | None = Header(defaul
 
     tap = _UsageTap()
 
-    def relay():
+    async def relay():
         try:
-            for chunk in upstream.iter_content(chunk_size=None):
+            async for chunk in upstream.aiter_bytes():
                 tap.feed(chunk)
                 yield chunk
         finally:
-            upstream.close()
-            _record_spend(info["sub"], models[0], tap)
+            with anyio.CancelScope(shield=True):             # also runs when the user closes the window mid-answer
+                await upstream.aclose()
+                await run_in_threadpool(_record_spend, info["sub"], models[0], tap)
 
     return StreamingResponse(relay(), media_type="text/event-stream")
 

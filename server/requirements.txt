@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 requests
+httpx
 google-auth
 psycopg2-binary

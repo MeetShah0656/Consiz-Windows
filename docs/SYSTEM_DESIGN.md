@@ -190,6 +190,7 @@ Failure behaviour: server unreachable → friendly retry text; 401 → sign in a
 | DPI / monitors | system-DPI aware; `px()` for fixed sizes; popup placed in the work area of the monitor under the cursor | `platform/win32/dpi.py` |
 | Settings | five tabs, changes apply at once; shortcuts validated and re-registered live; clear local data keeps `profile.md` | `platform/win32/settings.py`, `hotkeys.py`, `localdata.py` |
 | Updates | `GET /version` (LATEST_VERSION, MIN_VERSION, DOWNLOAD_URL from server settings); app asks daily, shows a tray "Download" item, never installs by itself; `MIN_VERSION` makes the server refuse old apps with HTTP 426 | `consiz/updater.py`, `server/app.py` |
+| Server concurrency | async answer route (httpx), Google keys cached, DB wait-not-fail, idle-memory clean-up; `scripts/load_test.py` measures it with a fake AI (no cost) | `server/app.py`, `scripts/load_test.py` |
 | Installer | Inno Setup script (per-user, no admin, same autostart key as the tray) + build script. **Never built yet; unsigned** | `installer/consiz.iss`, `scripts/build_installer.py` |
 
 Still open from §13: macOS port of PC mode/chat, Android/iOS clients, plans + billing, background watcher and confirm-first actions (T-12: conflicts with the non-goal "killing processes" above, so it needs a product decision), teammate verification, installer build + signing, compatibility matrix (WIN-010), Render in Singapore.

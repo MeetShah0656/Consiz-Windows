@@ -11,13 +11,33 @@ from server import app as srv  # noqa: E402
 
 
 class _FakeUpstream:
+    """The AI provider's streaming response, as the (async) server sees it. Subclasses override status_code / text /
+    iter_content to play other situations."""
     status_code = 200
+    text = ""
+    closed = False
 
     def iter_content(self, chunk_size=None):
         yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
 
-    def close(self):
-        pass
+    async def aiter_bytes(self):
+        for chunk in self.iter_content():
+            yield chunk
+
+    async def aread(self):
+        return self.text.encode()
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _opener(upstream, sent=None):
+    """What the server calls to start the AI request; hands back `upstream` and remembers the payload."""
+    async def open_upstream(payload, key):
+        if sent is not None:
+            sent["payload"], sent["key"] = payload, key
+        return upstream
+    return open_upstream
 
 
 @pytest.fixture
@@ -33,11 +53,7 @@ def client(tmp_path, monkeypatch):
                         (_ for _ in ()).throw(srv.HTTPException(401, "Sign in required.")))
     sent = {}
 
-    def fake_post(url, json=None, **kw):
-        sent["payload"] = json
-        return _FakeUpstream()
-
-    monkeypatch.setattr(srv.requests, "post", fake_post)
+    monkeypatch.setattr(srv, "_open_upstream", _opener(_FakeUpstream(), sent))
     monkeypatch.setattr(srv, "_live_model_ids", lambda: set())          # tests never call the real model list
     srv._mem_counts.clear()
     c = TestClient(srv.app)
@@ -97,9 +113,9 @@ def test_failed_provider_refunds_quota(client, monkeypatch):
     class Bad(_FakeUpstream):
         status_code = 500
 
-    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: Bad())
+    monkeypatch.setattr(srv, "_open_upstream", _opener(Bad()))
     assert client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code == 502
-    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: _FakeUpstream())
+    monkeypatch.setattr(srv, "_open_upstream", _opener(_FakeUpstream()))
     assert client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code == 200
 
 
@@ -233,7 +249,7 @@ def test_shared_free_allowance_used_up_gets_a_clear_message(client, monkeypatch)
         status_code = 429
         text = '{"error":{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000"}}'
 
-    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: Limited())
+    monkeypatch.setattr(srv, "_open_upstream", _opener(Limited()))
     r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
     assert r.status_code == 503 and "5:30 AM IST" in r.json()["detail"] and r.headers["retry-after"] == "3600"
     monkeypatch.setenv("DAILY_LIMIT", "1")                                # and the user is not charged for it
@@ -245,7 +261,7 @@ def test_ordinary_provider_rate_limit_says_busy_not_used_up(client, monkeypatch)
         status_code = 429
         text = '{"error":{"message":"Provider returned error"}}'
 
-    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: Busy())
+    monkeypatch.setattr(srv, "_open_upstream", _opener(Busy()))
     r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
     assert r.status_code == 503 and "busy" in r.json()["detail"].lower() and "allowance" not in r.json()["detail"]
 
@@ -275,7 +291,7 @@ def test_answer_cost_is_recorded_from_the_last_stream_chunk(client, monkeypatch)
             yield b'data: {"model":"vendor/real-model","choices":[],"usage":{"prompt_tokens":1200,'
             yield b'"completion_tokens":150,"cost":0.00042}}\n\ndata: [DONE]\n\n'
 
-    monkeypatch.setattr(srv.requests, "post", lambda *a, **k: WithUsage())
+    monkeypatch.setattr(srv, "_open_upstream", _opener(WithUsage()))
     r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
     assert r.status_code == 200 and "hi" in r.text and "real-model" in r.text       # the app still gets every byte
     assert _spend_rows() == [("u1", "vendor/real-model", 1, 1200, 150, 0.00042, 0)]
