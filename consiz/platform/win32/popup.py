@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from typing import Callable
 
+from consiz import prefs
 from consiz.config import CONFIG
 from consiz.dictation import AudioRecorder, get_dictation_engine
 from consiz.llm import (KIND_TITLES, Cancelled, CancelToken, LLMError, SignInRequired, current_token, take_note,
@@ -171,7 +172,7 @@ class PopupUI:
         self._placeholder_on = True
         self.window: tk.Toplevel | None = None
         self._lines: list[str] = []
-        self.user_size: tuple[int, int] | None = None
+        self.user_size: tuple[int, int] | None = _load_size()     # remembered from the last resize (KI-13)
         self._start_x = 0
         self._start_y = 0
         self._recorder = AudioRecorder(
@@ -342,6 +343,7 @@ class PopupUI:
 
         grip.bind("<Button-1>", start_resize)
         grip.bind("<B1-Motion>", do_resize)
+        grip.bind("<ButtonRelease-1>", lambda e: self._save_size())
 
         # drag the window by its title
         def start_drag(e):
@@ -612,6 +614,12 @@ class PopupUI:
             if y + want > bottom - 10:
                 y = max(top + 10, bottom - want - 10)
             self.window.geometry(f"{w}x{want}+{x}+{y}")
+
+    def _save_size(self) -> None:
+        """Remember the size the user dragged the window to (stored at 100 % scale, so it survives a scale change)."""
+        if self.user_size:
+            s = dpi.scale()
+            prefs.set("popup_size", [round(self.user_size[0] / s), round(self.user_size[1] / s)])
 
     def _area(self, point: tuple[int, int] | None = None) -> tuple[int, int, int, int]:
         """Usable area (screen minus taskbar) of the monitor under `point`, or under this window (T-06)."""
@@ -1045,6 +1053,16 @@ class PopupUI:
         self.chat.delete(rng[0], rng[1])
         self.chat.insert(start, new_text + chr(10), (style, tag))
         self.chat.config(state="disabled")
+
+
+def _load_size() -> tuple[int, int] | None:
+    """The saved answer-window size, converted for this screen; None = use the default."""
+    raw = prefs.get("popup_size")
+    try:
+        w, h = int(raw[0]), int(raw[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    return dpi.px(min(max(w, 320), 2400)), dpi.px(min(max(h, 260), 1600))
 
 
 def _close_stream(stream) -> None:

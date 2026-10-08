@@ -1,16 +1,20 @@
-"""Settings and API Key configuration dialog for Consiz (Win32) — Cream & Maroon Redesign.
+"""Settings window for Consiz (Win32), Cream & Maroon theme (T-09).
 
-Restyled according to consiz-cream-maroon-ui-redesign.md.
+Five tabs: General · Mouse · Shortcuts · PC mode · Account & data. Every control applies at once (no Save button to forget);
+the AI key box appears only in developer builds that talk to OpenRouter directly: end users sign in with Google.
+Logic that is not drawing lives in consiz/hotkeys.py, consiz/localdata.py, consiz/pause.py and consiz/prefs.py.
 """
 from __future__ import annotations
 
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Callable, Optional
 import webbrowser
 
-from consiz import prefs
+from consiz import hotkeys, pause, prefs
+from consiz.config import CONFIG
+from consiz.platform.win32.dpi import px
 from consiz.platform.win32.theme import (
     CREAM_50,
     CREAM_100,
@@ -28,9 +32,11 @@ from consiz.platform.win32.theme import (
     FONT_TEXT,
 )
 
+_OPEN: dict = {"win": None}
+
 
 def get_stored_api_key() -> str:
-    """Retrieve existing key from prefs or environment."""
+    """Retrieve existing key from prefs or environment (developer builds only)."""
     return os.environ.get("OPENROUTER_API_KEY", "") or prefs.get("openrouter_api_key", "") or ""
 
 
@@ -41,8 +47,64 @@ def save_api_key(key: str) -> None:
     os.environ["OPENROUTER_API_KEY"] = k
 
 
-def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Callable[[str], None]] = None) -> None:
-    """Open the Consiz API Key configuration dialog. Runs on Tkinter main thread."""
+# ------------------------------------------------------------------ small widgets
+def _section(parent, text: str) -> tk.Label:
+    lbl = tk.Label(parent, text=text, font=(FONT_TEXT, 10, "bold"), bg=CREAM_50, fg=MAROON_800, anchor="w")
+    lbl.pack(fill="x", pady=(px(14), px(4)))
+    return lbl
+
+
+def _note(parent, text: str, wrap: int = 500) -> tk.Label:
+    lbl = tk.Label(parent, text=text, font=(FONT_TEXT, 8), bg=CREAM_50, fg=INK_MUTED, anchor="w", justify="left",
+                   wraplength=px(wrap))
+    lbl.pack(fill="x", pady=(0, px(4)))
+    return lbl
+
+
+def _check(parent, text: str, var: tk.BooleanVar, command: Callable[[], None]) -> tk.Checkbutton:
+    cb = tk.Checkbutton(parent, text=text, variable=var, command=command, font=(FONT_TEXT, 10), bg=CREAM_50,
+                        fg=MAROON_900, selectcolor=CREAM_50, activebackground=CREAM_50, activeforeground=MAROON_900,
+                        anchor="w", justify="left")
+    cb.pack(fill="x", pady=(px(2), 0))
+    return cb
+
+
+def _radio(parent, text: str, var: tk.StringVar, value: str, command: Callable[[], None]) -> tk.Radiobutton:
+    rb = tk.Radiobutton(parent, text=text, variable=var, value=value, command=command, font=(FONT_TEXT, 10),
+                        bg=CREAM_50, fg=MAROON_900, selectcolor=CREAM_50, activebackground=CREAM_50,
+                        activeforeground=MAROON_900, anchor="w", justify="left")
+    rb.pack(fill="x", pady=(px(2), 0))
+    return rb
+
+
+def _button(parent, text: str, command: Callable[[], None], primary: bool = False) -> tk.Button:
+    b = tk.Button(parent, text=text, command=command, font=(FONT_TEXT, 9, "bold"),
+                  bg=MAROON_700 if primary else CREAM_200, fg=CREAM_50 if primary else MAROON_800,
+                  activebackground=MAROON_600 if primary else CREAM_300, activeforeground=CREAM_50 if primary else MAROON_900,
+                  relief="flat", bd=0, padx=px(12), pady=px(5), cursor="hand2")
+    return b
+
+
+def _entry(parent, var: tk.StringVar, width: int = 0) -> tk.Entry:
+    e = tk.Entry(parent, textvariable=var, font=(FONT_TEXT, 10), bg=CREAM_50, fg=MAROON_900, insertbackground=MAROON_900,
+                 relief="flat", highlightthickness=1, highlightbackground=CREAM_300, highlightcolor=FOCUS_RING)
+    if width:
+        e.config(width=width)
+    return e
+
+
+def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Callable[[str], None]] = None,
+                         on_sign_out: Optional[Callable[[], None]] = None,
+                         on_reset_popup: Optional[Callable[[], None]] = None) -> None:
+    """Open the Consiz Settings window. Runs on the Tkinter main thread."""
+    if _OPEN["win"] is not None:
+        try:
+            _OPEN["win"].deiconify()
+            _OPEN["win"].lift()
+            return
+        except tk.TclError:
+            _OPEN["win"] = None
+
     created_root = False
     if parent is None:
         root = tk._default_root
@@ -53,274 +115,330 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     else:
         root = parent
 
+    from consiz import auth, llm, localdata, pc_mode
+    from consiz.languages import CODES, LANGUAGES
+    from consiz.platform.win32 import mousegate, tray
+
     win = tk.Toplevel(root)
-    win.title("Consiz Settings — Preferences")
+    _OPEN["win"] = win
+    win.title("Consiz Settings")
     win.configure(bg=CREAM_100)
     win.resizable(False, False)
     win.attributes("-topmost", True)
+    width, height = px(620), px(600)
+    win.geometry(f"{width}x{height}+{max(0, (win.winfo_screenwidth() - width) // 2)}+"
+                 f"{max(0, (win.winfo_screenheight() - height) // 3)}")
 
-    # Window dimensions & centering
-    width, height = 520, 440
-    sw = win.winfo_screenwidth()
-    sh = win.winfo_screenheight()
-    x = max(0, (sw - width) // 2)
-    y = max(0, (sh - height) // 2)
-    win.geometry(f"{width}x{height}+{x}+{y}")
-
-    # Main container
-    container = tk.Frame(win, bg=CREAM_100, padx=26, pady=22)
-    container.pack(fill="both", expand=True)
-
-    # Header
-    hdr_frame = tk.Frame(container, bg=CREAM_100)
-    hdr_frame.pack(fill="x", pady=(0, 16))
-
-    icon_lbl = tk.Label(hdr_frame, text="✦", font=(FONT_DISPLAY, 20), bg=CREAM_100, fg=MAROON_700)
-    icon_lbl.pack(side="left", padx=(0, 10))
-
-    title_box = tk.Frame(hdr_frame, bg=CREAM_100)
-    title_box.pack(side="left", fill="x", expand=True)
-
-    title_lbl = tk.Label(
-        title_box,
-        text="Consiz Preferences",
-        font=(FONT_DISPLAY, 13, "bold"),
-        bg=CREAM_100,
-        fg=MAROON_900,
-        anchor="w",
-    )
-    title_lbl.pack(fill="x")
-
-    subtitle_lbl = tk.Label(
-        title_box,
-        text="Manage your AI backend connection, credentials, and answer language.",
-        font=(FONT_TEXT, 9),
-        bg=CREAM_100,
-        fg=INK_MUTED,
-        anchor="w",
-    )
-    subtitle_lbl.pack(fill="x")
-
-    # Key Input Card
-    card = tk.Frame(container, bg=CREAM_50, bd=1, relief="solid", highlightbackground=CREAM_300, padx=16, pady=16)
-    card.pack(fill="x", pady=(0, 14))
-
-    key_lbl = tk.Label(
-        card,
-        text="OpenRouter API Key:",
-        font=(FONT_TEXT, 9, "bold"),
-        bg=CREAM_50,
-        fg=MAROON_800,
-    )
-    key_lbl.pack(anchor="w", pady=(0, 6))
-
-    input_frame = tk.Frame(card, bg=CREAM_50)
-    input_frame.pack(fill="x")
-
-    key_var = tk.StringVar(value=get_stored_api_key())
-    show_key = tk.BooleanVar(value=False)
-
-    entry = tk.Entry(
-        input_frame,
-        textvariable=key_var,
-        font=("Consolas", 10),
-        bg=CREAM_50,
-        fg=MAROON_900,
-        insertbackground=MAROON_900,
-        relief="flat",
-        highlightbackground=CREAM_300,
-        highlightcolor=FOCUS_RING,
-        highlightthickness=1,
-        show="•",
-    )
-    entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 8))
-
-    def toggle_show():
-        if show_key.get():
-            entry.config(show="")
-            eye_btn.config(text="Hide")
-        else:
-            entry.config(show="•")
-            eye_btn.config(text="Show")
-
-    def on_eye_click():
-        show_key.set(not show_key.get())
-        toggle_show()
-
-    eye_btn = tk.Button(
-        input_frame,
-        text="Show",
-        command=on_eye_click,
-        font=(FONT_TEXT, 8, "bold"),
-        bg=CREAM_200,
-        fg=MAROON_800,
-        activebackground=CREAM_300,
-        activeforeground=MAROON_900,
-        relief="flat",
-        bd=1,
-        highlightbackground=CREAM_300,
-        padx=10,
-        pady=3,
-        cursor="hand2",
-    )
-    eye_btn.pack(side="right")
-
-    # Language Selection Row
-    lang_sep = tk.Frame(card, bg=CREAM_300, height=1)
-    lang_sep.pack(fill="x", pady=(14, 12))
-
-    lang_lbl = tk.Label(
-        card,
-        text="Default Answer Language:",
-        font=(FONT_TEXT, 9, "bold"),
-        bg=CREAM_50,
-        fg=MAROON_800,
-    )
-    lang_lbl.pack(anchor="w", pady=(0, 6))
-
-    from consiz.languages import LANGUAGES, CODES
-    from consiz.config import CONFIG
-
-    lang_display_names = [
-        f"{lbl} ({name})" if code != "auto" else "Auto (Matches selected text)"
-        for code, lbl, name, _ in LANGUAGES
-    ]
-    curr_code = CONFIG.answer_language
-    curr_idx = CODES.index(curr_code) if curr_code in CODES else 0
-
-    lang_combo_var = tk.StringVar(value=lang_display_names[curr_idx])
-
-    # Configure ttk style for Combobox
-    style = ttk.Style()
-    style.theme_use("clam")
-    style.configure(
-        "Cream.TCombobox",
-        fieldbackground=CREAM_50,
-        background=CREAM_200,
-        foreground=MAROON_900,
-        darkcolor=CREAM_300,
-        lightcolor=CREAM_300,
-        bordercolor=CREAM_300,
-    )
-
-    lang_combo = ttk.Combobox(
-        card,
-        textvariable=lang_combo_var,
-        values=lang_display_names,
-        state="readonly",
-        font=(FONT_TEXT, 9),
-        style="Cream.TCombobox",
-    )
-    lang_combo.current(curr_idx)
-    lang_combo.pack(fill="x")
-
-    # Link / Hint
-    hint_frame = tk.Frame(container, bg=CREAM_100)
-    hint_frame.pack(fill="x", pady=(0, 16))
-
-    hint_lbl = tk.Label(
-        hint_frame,
-        text="💡 Don't have a key? OpenRouter offers 50+ free model requests daily.",
-        font=(FONT_TEXT, 8),
-        bg=CREAM_100,
-        fg=INK_MUTED,
-        anchor="w",
-    )
-    hint_lbl.pack(fill="x")
-
-    link_lbl = tk.Label(
-        hint_frame,
-        text="👉 Click here to get a free API Key at openrouter.ai/keys",
-        font=(FONT_TEXT, 8, "underline"),
-        bg=CREAM_100,
-        fg=MAROON_700,
-        cursor="hand2",
-        anchor="w",
-    )
-    link_lbl.pack(fill="x", pady=(2, 0))
-    link_lbl.bind("<Button-1>", lambda e: webbrowser.open("https://openrouter.ai/keys"))
-    link_lbl.bind("<Enter>", lambda e: link_lbl.configure(fg=MAROON_600))
-    link_lbl.bind("<Leave>", lambda e: link_lbl.configure(fg=MAROON_700))
-
-    # Status Message Label
-    status_lbl = tk.Label(container, text="", font=(FONT_TEXT, 9, "bold"), bg=CREAM_100, fg=SUCCESS)
-    status_lbl.pack(fill="x", pady=(0, 8))
-
-    # Buttons Frame
-    btn_frame = tk.Frame(container, bg=CREAM_100)
-    btn_frame.pack(fill="x", side="bottom")
-
-    def do_save():
-        key = key_var.get().strip()
-        if not key:
-            status_lbl.config(text="⚠️ Please enter an API key.", fg=WARNING)
-            return
-
-        save_api_key(key)
-
-        # Save selected answer language
-        sel_idx = lang_combo.current()
-        if 0 <= sel_idx < len(CODES):
-            chosen_code = CODES[sel_idx]
-            CONFIG.answer_language = chosen_code
-            prefs.set("answer_language", chosen_code)
-
-        status_lbl.config(text="✓ Preferences saved and activated!", fg=SUCCESS)
-        if on_saved:
-            try:
-                on_saved(key)
-            except Exception:
-                pass
-        win.after(700, win.destroy)
-
-    def do_cancel():
+    def _closed(*_):
+        _OPEN["win"] = None
         win.destroy()
 
-    save_btn = tk.Button(
-        btn_frame,
-        text="Save & Activate",
-        command=do_save,
-        font=(FONT_TEXT, 9, "bold"),
-        bg=MAROON_700,
-        fg=CREAM_50,
-        activebackground=MAROON_600,
-        activeforeground=CREAM_50,
-        relief="flat",
-        bd=0,
-        padx=18,
-        pady=6,
-        cursor="hand2",
-    )
-    save_btn.pack(side="right", padx=(8, 0))
-    save_btn.bind("<Enter>", lambda e: save_btn.configure(bg=MAROON_600))
-    save_btn.bind("<Leave>", lambda e: save_btn.configure(bg=MAROON_700))
+    win.protocol("WM_DELETE_WINDOW", _closed)
+    win.bind("<Escape>", _closed)
 
-    cancel_btn = tk.Button(
-        btn_frame,
-        text="Close",
-        command=do_cancel,
-        font=(FONT_TEXT, 9, "bold"),
-        bg=CREAM_50,
-        fg=MAROON_800,
-        activebackground=CREAM_200,
-        activeforeground=MAROON_900,
-        relief="flat",
-        bd=1,
-        highlightbackground=CREAM_300,
-        highlightthickness=1,
-        padx=14,
-        pady=6,
-        cursor="hand2",
-    )
-    cancel_btn.pack(side="right")
-    cancel_btn.bind("<Enter>", lambda e: cancel_btn.configure(bg=CREAM_200))
-    cancel_btn.bind("<Leave>", lambda e: cancel_btn.configure(bg=CREAM_50))
+    # ---- header
+    hdr = tk.Frame(win, bg=CREAM_100)
+    hdr.pack(fill="x", padx=px(24), pady=(px(18), px(8)))
+    tk.Label(hdr, text="✦", font=(FONT_DISPLAY, 20), bg=CREAM_100, fg=MAROON_700).pack(side="left", padx=(0, px(10)))
+    box = tk.Frame(hdr, bg=CREAM_100)
+    box.pack(side="left", fill="x", expand=True)
+    tk.Label(box, text="Settings", font=(FONT_DISPLAY, 14, "bold"), bg=CREAM_100, fg=MAROON_900, anchor="w").pack(fill="x")
+    tk.Label(box, text="Changes apply at once.", font=(FONT_TEXT, 9), bg=CREAM_100, fg=INK_MUTED, anchor="w").pack(fill="x")
 
-    win.bind("<Return>", lambda e: do_save())
-    win.bind("<Escape>", lambda e: do_cancel())
+    # ---- footer (status + Close) first, so the tabs get the leftover space
+    foot = tk.Frame(win, bg=CREAM_100)
+    foot.pack(side="bottom", fill="x", padx=px(24), pady=(px(6), px(16)))
+    status = tk.Label(foot, text="", font=(FONT_TEXT, 9, "bold"), bg=CREAM_100, fg=SUCCESS, anchor="w")
+    status.pack(side="left", fill="x", expand=True)
+    _button(foot, "Close", _closed).pack(side="right")
+
+    def say(text: str, ok: bool = True) -> None:
+        status.config(text=text, fg=SUCCESS if ok else WARNING)
+        win.after(3500, lambda: status.config(text="") if status.cget("text") == text else None)
+
+    # ---- tabs
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("Cream.TNotebook", background=CREAM_100, borderwidth=0)
+    style.configure("Cream.TNotebook.Tab", background=CREAM_200, foreground=MAROON_800, padding=(px(14), px(6)),
+                    font=(FONT_TEXT, 9, "bold"), borderwidth=0)
+    style.map("Cream.TNotebook.Tab", background=[("selected", CREAM_50)], foreground=[("selected", MAROON_900)])
+    style.configure("Cream.TCombobox", fieldbackground=CREAM_50, background=CREAM_200, foreground=MAROON_900,
+                    darkcolor=CREAM_300, lightcolor=CREAM_300, bordercolor=CREAM_300)
+    book = ttk.Notebook(win, style="Cream.TNotebook")
+    book.pack(fill="both", expand=True, padx=px(24), pady=(0, px(4)))
+
+    def new_tab(title: str) -> tk.Frame:
+        outer = tk.Frame(book, bg=CREAM_50, highlightbackground=CREAM_300, highlightthickness=1)
+        inner = tk.Frame(outer, bg=CREAM_50)
+        inner.pack(fill="both", expand=True, padx=px(18), pady=(0, px(12)))
+        book.add(outer, text=title)
+        return inner
+
+    # =============================================================== General
+    g = new_tab("General")
+    _section(g, "Answer language")
+    names = [f"{lbl} ({name})" if code != "auto" else "Auto (matches the selected text)" for code, lbl, name, _ in LANGUAGES]
+    lang_var = tk.StringVar(value=names[CODES.index(CONFIG.answer_language) if CONFIG.answer_language in CODES else 0])
+    combo = ttk.Combobox(g, textvariable=lang_var, values=names, state="readonly", font=(FONT_TEXT, 10), style="Cream.TCombobox")
+    combo.pack(fill="x")
+
+    def on_lang(_e=None):
+        i = combo.current()
+        if 0 <= i < len(CODES):
+            CONFIG.answer_language = CODES[i]
+            prefs.set("answer_language", CODES[i])
+            say("Answer language saved ✓")
+
+    combo.bind("<<ComboboxSelected>>", on_lang)
+
+    _section(g, "Start with Windows")
+    auto_var = tk.BooleanVar(value=tray.is_autostart_enabled())
+    _check(g, "Start Consiz when I sign in to Windows", auto_var,
+           lambda: (tray.set_autostart_enabled(auto_var.get()), say("Saved ✓")))
+
+    _section(g, "Where answers come from")
+    server = llm.server_mode()
+    src_var = tk.StringVar(value="ollama" if CONFIG.provider == "ollama" else "openrouter")
+
+    def on_source():
+        CONFIG.provider = src_var.get()
+        prefs.set("provider", CONFIG.provider)
+        say("AI source saved ✓")
+
+    _radio(g, "Consiz cloud (needs internet; sign in with Google)" if server else "OpenRouter (uses the key below)",
+           src_var, "openrouter", on_source)
+    _radio(g, f"Offline on this PC ({CONFIG.ollama_model} through Ollama): private, slower", src_var, "ollama", on_source)
+    fb_var = tk.BooleanVar(value=bool(prefs.get("offline_fallback", True)))
+    _check(g, "If the cloud cannot be reached, answer offline when Ollama is running", fb_var,
+           lambda: (prefs.set("offline_fallback", fb_var.get()), say("Saved ✓")))
+
+    if not server:                                          # developer builds only
+        _section(g, "OpenRouter API key (developer build)")
+        key_var = tk.StringVar(value=get_stored_api_key())
+        row = tk.Frame(g, bg=CREAM_50)
+        row.pack(fill="x")
+        ke = _entry(row, key_var)
+        ke.config(show="•")
+        ke.pack(side="left", fill="x", expand=True, ipady=px(4), padx=(0, px(8)))
+
+        def save_key():
+            k = key_var.get().strip()
+            if not k:
+                say("Paste a key first.", ok=False)
+                return
+            save_api_key(k)
+            if on_saved:
+                try:
+                    on_saved(k)
+                except Exception:
+                    pass
+            say("Key saved ✓")
+
+        _button(row, "Save key", save_key, primary=True).pack(side="right")
+        link = tk.Label(g, text="Get a free key at openrouter.ai/keys", font=(FONT_TEXT, 8, "underline"), bg=CREAM_50,
+                        fg=MAROON_700, cursor="hand2", anchor="w")
+        link.pack(fill="x", pady=(px(2), 0))
+        link.bind("<Button-1>", lambda e: webbrowser.open("https://openrouter.ai/keys"))
+
+    # =============================================================== Mouse & keys
+    m = new_tab("Mouse")
+    _section(m, "How to start Consiz with the mouse")
+    mode_var = tk.StringVar(value=(os.environ.get("CONSIZ_TRIGGER_MODE") or prefs.get("trigger_mode") or mousegate.DEFAULT_MODE))
+    if mode_var.get() not in mousegate.MODES:
+        mode_var.set(mousegate.DEFAULT_MODE)
+    labels = {"middle": "Middle click (given back to the app when nothing is selected)",
+              "ctrl_middle": "Ctrl + middle click only (normal clicks are never touched)",
+              "hotkey": "Keyboard only (the mouse is never touched)"}
+    for mode in mousegate.MODES:
+        _radio(m, labels[mode], mode_var, mode, lambda: (prefs.set("trigger_mode", mode_var.get()), say("Saved ✓")))
+
+    _section(m, "Pause")
+    paused_var = tk.BooleanVar(value=pause.is_paused())
+    _check(m, "Pause Consiz now (mouse and shortcuts go back to your apps)", paused_var,
+           lambda: pause.set_paused(paused_var.get()))
+    fs_var = tk.BooleanVar(value=bool(prefs.get("pause_in_fullscreen", True)))
+    _check(m, "Pause the mouse trigger while a full-screen app or a presentation is in front", fs_var,
+           lambda: (prefs.set("pause_in_fullscreen", fs_var.get()), say("Saved ✓")))
+
+    _section(m, "Programs where the middle button is left alone")
+    _note(m, "Built in: " + ", ".join(sorted(mousegate.DEFAULT_EXCLUDED)[:6]) + " and other 3D / CAD tools. "
+             "Add your own program names, separated by commas (for example: vlc.exe, mpc-hc64.exe).")
+    ex_var = tk.StringVar(value=", ".join(prefs.get("trigger_excluded_apps") or []))
+    ex_row = tk.Frame(m, bg=CREAM_50)
+    ex_row.pack(fill="x")
+    _entry(ex_row, ex_var).pack(side="left", fill="x", expand=True, ipady=px(4), padx=(0, px(8)))
+
+    def save_excluded():
+        names_ = []
+        for part in ex_var.get().split(","):
+            n = part.strip().lower()
+            if n:
+                names_.append(n if "." in n else n + ".exe")
+        prefs.set("trigger_excluded_apps", names_)
+        ex_var.set(", ".join(names_))
+        say("Program list saved ✓")
+
+    _button(ex_row, "Save", save_excluded, primary=True).pack(side="right")
+
+    # =============================================================== Shortcuts
+    k = new_tab("Shortcuts")
+    _section(k, "Keyboard shortcuts")
+    _note(k, "Use two modifiers (for example Ctrl+Alt+S) or one modifier with a function key (Ctrl+F9). "
+             "A shortcut such as Ctrl+S alone would break Save in every app, so it is refused.")
+    hk_rows = {}
+    for label, pref_key, default in (("Explain selection", "hotkey_explain", "<ctrl>+<alt>+s"),
+                                     ("Ask about my PC", "hotkey_pc", "<ctrl>+<alt>+a")):
+        row = tk.Frame(k, bg=CREAM_50)
+        row.pack(fill="x", pady=(px(3), 0))
+        tk.Label(row, text=label, font=(FONT_TEXT, 10), bg=CREAM_50, fg=MAROON_900, width=18, anchor="w").pack(side="left")
+        current = CONFIG.hotkey if pref_key == "hotkey_explain" else CONFIG.pc_hotkey
+        var = tk.StringVar(value=hotkeys.pretty(current))
+        _entry(row, var, width=16).pack(side="left", ipady=px(3))
+        hk_rows[pref_key] = (var, default)
+
+    def apply_hotkeys(reset: bool = False):
+        values = {}
+        for pref_key, (var, default) in hk_rows.items():
+            text = default if reset else var.get()
+            norm = hotkeys.normalize(text)
+            if norm is None:
+                say("That shortcut is not allowed. Try Ctrl+Alt+<letter>.", ok=False)
+                return
+            values[pref_key] = norm
+        if values["hotkey_explain"] == values["hotkey_pc"]:
+            say("The two shortcuts must be different.", ok=False)
+            return
+        for pref_key, norm in values.items():
+            prefs.set(pref_key, norm)
+            hk_rows[pref_key][0].set(hotkeys.pretty(norm))
+        CONFIG.hotkey, CONFIG.pc_hotkey = values["hotkey_explain"], values["hotkey_pc"]
+        say("Shortcuts saved ✓ (active within a few seconds)")
+
+    btns = tk.Frame(k, bg=CREAM_50)
+    btns.pack(fill="x", pady=(px(6), 0))
+    _button(btns, "Save shortcuts", apply_hotkeys, primary=True).pack(side="left")
+    _button(btns, "Reset to default", lambda: apply_hotkeys(reset=True)).pack(side="left", padx=(px(8), 0))
+
+    # =============================================================== PC mode
+    p = new_tab("PC mode")
+    _section(p, "Permission")
+    perm_lbl = tk.Label(p, text="", font=(FONT_TEXT, 10), bg=CREAM_50, fg=MAROON_900, anchor="w")
+    perm_lbl.pack(fill="x")
+
+    def refresh_perm():
+        perm_lbl.config(text="Consiz may look at program names, memory use and window titles when you ask about your PC."
+                        if prefs.get("pc_mode_consent") else "Not allowed yet. Consiz asks the first time you use Ask about my PC.",
+                        wraplength=px(520), justify="left")
+
+    refresh_perm()
+    prow = tk.Frame(p, bg=CREAM_50)
+    prow.pack(fill="x", pady=(px(6), 0))
+    _button(prow, "Forget my permission", lambda: (prefs.set("pc_mode_consent", False), refresh_perm(),
+                                                   say("Consiz will ask again next time ✓"))).pack(side="left")
+    _button(prow, "Forget windows I allowed", lambda: (pc_mode.forget_allowed_windows(),
+                                                       say("Windows will ask permission again ✓"))).pack(side="left", padx=(px(8), 0))
+
+    _section(p, "Windows Consiz never reads inside")
+    _note(p, "Always blocked: password managers, remote desktop, and any window whose title looks like a password, bank, "
+             "wallet or private-browsing page. Add your own words below, separated by commas (a window whose title or "
+             "program name contains one is never read).")
+    bl_var = tk.StringVar(value=", ".join(pc_mode.user_blocklist()))
+    bl_row = tk.Frame(p, bg=CREAM_50)
+    bl_row.pack(fill="x")
+    _entry(bl_row, bl_var).pack(side="left", fill="x", expand=True, ipady=px(4), padx=(0, px(8)))
+
+    def save_blocklist():
+        words = [w.strip() for w in bl_var.get().split(",") if w.strip()]
+        prefs.set("pc_blocklist_words", words)
+        bl_var.set(", ".join(words))
+        say("Never-read list saved ✓")
+
+    _button(bl_row, "Save", save_blocklist, primary=True).pack(side="right")
+
+    # =============================================================== Account & data
+    a = new_tab("Account & data")
+    _section(a, "Account")
+    if auth.enabled():
+        who = tk.Label(a, text="", font=(FONT_TEXT, 10), bg=CREAM_50, fg=MAROON_900, anchor="w")
+        who.pack(fill="x")
+        out_btn = _button(a, "Sign out", lambda: None)
+
+        def refresh_who():
+            if auth.signed_in():
+                who.config(text="Signed in as " + auth.display_name())
+                out_btn.config(state="normal")
+            else:
+                who.config(text="Not signed in.")
+                out_btn.config(state="disabled")
+
+        def do_sign_out():
+            if on_sign_out:
+                on_sign_out()
+            else:
+                auth.sign_out()
+            refresh_who()
+            say("Signed out ✓")
+
+        out_btn.config(command=do_sign_out)
+        out_btn.pack(anchor="w", pady=(px(6), 0))
+        refresh_who()
+    else:
+        _note(a, "Sign-in is not used in this build.")
+
+    _section(a, "Answer window")
+    _note(a, "Drag the corner of the answer window to resize it: Consiz remembers the size.")
+
+    def reset_popup():
+        prefs.set("popup_size", None)
+        if on_reset_popup:
+            on_reset_popup()
+        say("Answer window size reset ✓")
+
+    _button(a, "Reset answer window size", reset_popup).pack(anchor="w")
+
+    _section(a, "Help")
+    hrow = tk.Frame(a, bg=CREAM_50)
+    hrow.pack(fill="x")
+
+    def open_logs():
+        from consiz import logs
+        try:
+            os.startfile(str(logs.log_folder()))
+        except OSError:
+            pass
+
+    def copy_diag():
+        from consiz import logs
+        win.clipboard_clear()
+        win.clipboard_append(logs.diagnostics())
+        say("Diagnostics copied. Paste them into your message to support ✓")
+
+    _button(hrow, "Open log folder", open_logs).pack(side="left")
+    _button(hrow, "Copy diagnostics", copy_diag).pack(side="left", padx=(px(8), 0))
+
+    _section(a, "Your data on this PC")
+    _note(a, "Clears your settings, the saved sign-in and the app log from this computer. Your profile.md is kept. "
+             "Consiz shows the welcome screens again next time it starts.")
+
+    def clear_all():
+        if not messagebox.askyesno("Clear local data", "Clear Consiz's settings, saved sign-in and log from this PC?\n\n"
+                                   "You will be signed out. Consiz stays running until you restart it.", parent=win):
+            return
+        done = localdata.clear_local_data()
+        if on_sign_out and auth.enabled():
+            try:
+                on_sign_out()
+            except Exception:
+                pass
+        say(f"Done ({len(done)} item(s)). Restart Consiz to finish ✓")
+
+    _button(a, "Clear local data…", clear_all).pack(anchor="w", pady=(px(4), 0))
+
+    from consiz import __version__
+    tk.Label(a, text=f"Consiz {__version__}", font=(FONT_TEXT, 8), bg=CREAM_50, fg=INK_MUTED, anchor="w").pack(
+        fill="x", side="bottom", pady=(px(8), 0))
 
     win.focus_set()
-    entry.focus_set()
-
     if created_root:
         root.mainloop()

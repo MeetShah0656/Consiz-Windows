@@ -413,10 +413,12 @@ def main() -> int:
             from consiz.platform.win32.settings import show_settings_dialog
 
             def _open_settings():
+                kw = dict(on_sign_out=_sign_out if auth_on else None,
+                          on_reset_popup=lambda: setattr(POPUP, "user_size", None))
                 if POPUP and getattr(POPUP, "window", None):
-                    POPUP.window.after(0, lambda: show_settings_dialog(POPUP.window))
+                    POPUP.window.after(0, lambda: show_settings_dialog(POPUP.window, **kw))
                 else:
-                    show_settings_dialog()
+                    show_settings_dialog(**kw)
 
             tray = SystemTray(
                 on_explain=lambda src: on_trigger(src),

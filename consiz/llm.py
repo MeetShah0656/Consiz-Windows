@@ -357,6 +357,12 @@ def _server_url() -> str:
     return os.environ.get("CONSIZ_SERVER_URL", "").strip().rstrip("/")
 
 
+def server_mode() -> bool:
+    """True when answers come from the Consiz server (end users); False when this build talks to OpenRouter directly
+    with a key in .env (developers)."""
+    return bool(_server_url())
+
+
 def _base_url() -> str:
     return f"{_server_url()}/v1" if _server_url() else _OPENROUTER_URL
 

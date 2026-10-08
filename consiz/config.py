@@ -169,5 +169,7 @@ CONFIG = Config()
 from . import prefs as _prefs
 from .languages import normalize as _norm_lang
 CONFIG.answer_language = _norm_lang(_prefs.get("answer_language") or os.environ.get("ANSWER_LANGUAGE", "auto"))
+CONFIG.hotkey = os.environ.get("CONSIZ_HOTKEY") or _prefs.get("hotkey_explain") or CONFIG.hotkey
+CONFIG.pc_hotkey = os.environ.get("CONSIZ_PC_HOTKEY") or _prefs.get("hotkey_pc") or "<ctrl>+<alt>+a"
 CONFIG.provider = os.environ.get("CONSIZ_PROVIDER") or _prefs.get("provider") or "openrouter"
 CONFIG.ollama_model = os.environ.get("CONSIZ_OLLAMA_MODEL") or _prefs.get("ollama_model") or CONFIG.ollama_model

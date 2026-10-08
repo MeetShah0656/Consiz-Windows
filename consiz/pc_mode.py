@@ -157,7 +157,25 @@ def sensitive_reason(win: dict) -> str | None:
         return "it is a password manager or remote-desktop window"
     if SENSITIVE_TITLE.search(win["title"]):
         return "its title looks private (password, banking, incognito...)"
+    haystack = (win["title"] + " " + win["app"]).lower()
+    if any(word in haystack for word in user_blocklist()):
+        return "it matches a word on your own never-read list (Settings)"
     return None
+
+
+def user_blocklist() -> list[str]:
+    """Extra words the user chose in Settings: a window whose title or program name contains one is never read."""
+    from . import prefs
+    raw = prefs.get("pc_blocklist_words") or []
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    return [str(w).strip().lower() for w in raw if str(w).strip()]
+
+
+def forget_allowed_windows() -> None:
+    """Settings > PC mode: windows allowed earlier this session ask permission again, and cached reads are dropped."""
+    _allowed.clear()
+    _read_cache.clear()
 
 
 def parse_read(first_line: str, n_windows: int) -> list[int]:

@@ -144,8 +144,7 @@ class Trigger:
         self._last_middle_click_time = 0.0
         self._gate = mousegate.MiddleGate()
         self._fg_names: dict[int, str] = {}
-        self._hotkey_defs: list[tuple[int, str, str, str]] = []     # (id, name, hotkey text, what it fires)
-        self._hotkeys_on = False
+        self._registered: dict[str, tuple[int, str]] = {}          # name -> (hotkey id, text) currently held
         self._load_gate_settings()
         pause.on_change(lambda _p: self._wake_pump())
 
@@ -178,21 +177,33 @@ class Trigger:
         if self._hook_tid:
             user32.PostThreadMessageW(self._hook_tid, WM_PAUSE_CHANGED, 0, 0)
 
+    def _desired_hotkeys(self) -> dict[str, tuple[int, str]]:
+        want = {"hotkey": (HOTKEY_ID, CONFIG.hotkey)}
+        if self._on_dictate and getattr(CONFIG, "dictate_hotkey", ""):
+            want["dictate"] = (HOTKEY_DICTATE_ID, CONFIG.dictate_hotkey)
+        if self._on_pc and getattr(CONFIG, "pc_hotkey", ""):
+            want["pc"] = (HOTKEY_PC_ID, CONFIG.pc_hotkey)
+        return want
+
     def _sync_hotkeys(self) -> None:
-        """Runs on the pump thread (RegisterHotKey belongs to the thread that made it). Paused = keys are released,
-        so the app in front gets Ctrl+Alt+S / Ctrl+Alt+A itself."""
-        want = not pause.is_paused()
-        if want == self._hotkeys_on:
-            return
-        for hk_id, name, text, _what in self._hotkey_defs:
-            if want:
+        """Runs on the pump thread (RegisterHotKey belongs to the thread that made it). Makes the registered keys match
+        what should be held now: none while paused (the app in front gets Ctrl+Alt+S / Ctrl+Alt+A itself), and the
+        new key as soon as Settings changes a shortcut."""
+        active = not pause.is_paused()
+        desired = self._desired_hotkeys()
+        for name, (hk_id, text) in list(self._registered.items()):
+            if not active or desired.get(name, (0, None))[1] != text:
+                user32.UnregisterHotKey(None, hk_id)
+                del self._registered[name]
+                self._native_registered.discard(name)
+        if active:
+            for name, (hk_id, text) in desired.items():
+                if name in self._registered:
+                    continue
                 parsed = parse_hotkey_to_win32(text)
                 if parsed and user32.RegisterHotKey(None, hk_id, parsed[0], parsed[1]):
+                    self._registered[name] = (hk_id, text)
                     self._native_registered.add(name)
-            elif name in self._native_registered:
-                user32.UnregisterHotKey(None, hk_id)
-                self._native_registered.discard(name)
-        self._hotkeys_on = want
 
     # ------------------------------------------------------------------ firing
     def _fire(self, source: str) -> None:
@@ -313,13 +324,7 @@ class Trigger:
         set_thread_high_priority()
         self._hook_tid = kernel32.GetCurrentThreadId()
 
-        # 1. Register Kernel HotKeys dynamically from CONFIG (released while Consiz is paused)
-        self._hotkey_defs = [(HOTKEY_ID, "hotkey", CONFIG.hotkey, "explain")]
-        if self._on_dictate and getattr(CONFIG, "dictate_hotkey", ""):
-            self._hotkey_defs.append((HOTKEY_DICTATE_ID, "dictate", CONFIG.dictate_hotkey, "dictate"))
-        if self._on_pc and getattr(CONFIG, "pc_hotkey", ""):
-            self._hotkey_defs.append((HOTKEY_PC_ID, "pc", CONFIG.pc_hotkey, "pc"))
-        self._hotkeys_on = False
+        # 1. Register Kernel HotKeys from CONFIG (released while paused; re-registered when Settings changes them)
         self._sync_hotkeys()
 
         # 2. Install Low-Level Mouse Hook with global permanent callback reference
@@ -365,9 +370,9 @@ class Trigger:
         if self._mouse_hook:
             user32.UnhookWindowsHookEx(self._mouse_hook)
             self._mouse_hook = None
-        for hk_id, name, _text, _what in self._hotkey_defs:
-            if name in self._native_registered:
-                user32.UnregisterHotKey(None, hk_id)
+        for hk_id, _text in list(self._registered.values()):
+            user32.UnregisterHotKey(None, hk_id)
+        self._registered.clear()
         self._native_registered.clear()
 
     def start(self) -> None:

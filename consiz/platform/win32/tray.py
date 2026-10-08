@@ -19,7 +19,8 @@ except ImportError:
     Image = None
     ImageDraw = None
 
-from consiz import pause
+from consiz import hotkeys, pause
+from consiz.config import CONFIG
 
 RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "Consiz"
@@ -278,13 +279,13 @@ class SystemTray:
         menu = Menu(
             Item(lambda item: "⏸ Consiz is paused" if pause.is_paused() else "⚡ Consiz is active", None, enabled=False),
             Item(lambda item: "▶ Resume Consiz" if pause.is_paused() else "⏸ Pause Consiz", self._toggle_pause),
-            Item("Explain Selection (Ctrl+Alt+S)", self._trigger_explain),
-            *([Item("Ask about my PC (Ctrl+Alt+A)", self._trigger_pc)] if self.on_pc else []),
+            Item(lambda item: f"Explain Selection ({hotkeys.pretty(CONFIG.hotkey)})", self._trigger_explain),
+            *([Item(lambda item: f"Ask about my PC ({hotkeys.pretty(CONFIG.pc_hotkey)})", self._trigger_pc)] if self.on_pc else []),
             Item("Voice Dictate (Ctrl+Alt+D)", self._trigger_dictate),
             Menu.SEPARATOR,
             Item("🌐 Answer Language", _make_lang_menu()),
             Item("🖱 Trigger", _make_trigger_menu()),
-            Item("⚙️ Configure API Key & Settings...", self._open_settings),
+            Item("⚙️ Settings…", self._open_settings),
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
             Item("Help && diagnostics", Menu(
                 Item("Open log folder", self._open_logs),

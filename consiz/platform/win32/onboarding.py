@@ -31,6 +31,7 @@ from consiz.platform.win32.theme import (
     FONT_TEXT,
 )
 
+from consiz import hotkeys
 from consiz.platform.win32.dpi import px
 
 WIDTH, HEIGHT = px(490), px(500)
@@ -260,7 +261,7 @@ class OnboardingUI:
             f,
             "Consiz is a lightweight, thoughtful assistant living quietly in the background of your Windows PC.\n\n"
             "Select anything on your screen — a sentence, a complex document, code, or a folder — "
-            f"then press the middle mouse button (or {CONFIG.hotkey}).\n\n"
+            f"then press the middle mouse button (or {hotkeys.pretty(CONFIG.hotkey)}).\n\n"
             "Consiz explains, answers, or summarizes it immediately next to your cursor. "
             "No window switching, no manual copying.",
         ).pack(anchor="w", fill="x")
@@ -271,7 +272,7 @@ class OnboardingUI:
 
         tk.Label(
             tip_card,
-            text=f"✦ Trigger: Middle Mouse Click  ·  or  {CONFIG.hotkey}",
+            text=f"✦ Trigger: Middle Mouse Click  ·  or  {hotkeys.pretty(CONFIG.hotkey)}",
             font=(FONT_TEXT, 9, "bold"),
             fg=MAROON_800,
             bg=CREAM_200,
@@ -349,9 +350,12 @@ class OnboardingUI:
         radios = tk.Frame(f, bg=CREAM_100)
         radios.pack(anchor="w", fill="x")
 
+        from consiz import llm
+        server = llm.server_mode()
         tk.Radiobutton(
             radios,
-            text="Cloud (OpenRouter) — fast, high intelligence, free models",
+            text=("Cloud (Consiz) — fast, free to start, sign in with Google" if server
+                  else "Cloud (OpenRouter) — fast, high intelligence, free models"),
             variable=self.provider_var,
             value="openrouter",
             command=self._refresh_ai_state,
@@ -414,6 +418,10 @@ class OnboardingUI:
         )
         save_btn.pack(side="left", padx=(8, 0))
         _sub(self.cloud_frame, "Get a free key at: openrouter.ai/keys").pack(anchor="w", pady=(2, 0))
+        if server:                                         # end users never see or need an AI key
+            row.pack_forget()
+            for w in self.cloud_frame.winfo_children():
+                w.pack_forget()
 
         # Offline card
         self.offline_frame = tk.Frame(
@@ -458,7 +466,7 @@ class OnboardingUI:
         _body(
             f,
             "Consiz is now running quietly in your Windows system tray.\n\n"
-            f"•  Select text or a file, then press middle mouse (or {CONFIG.hotkey}) — Consiz explains, "
+            f"•  Select text or a file, then press middle mouse (or {hotkeys.pretty(CONFIG.hotkey)}) — Consiz explains, "
             "answers, or summarizes immediately.\n\n"
             "•  Type a follow-up question right in the answer popup and press Enter.\n\n"
             "•  Click Copy on any answer to paste it into your active document.\n\n"
@@ -509,7 +517,11 @@ class OnboardingUI:
             self.cloud_frame.pack(fill="x")
             import os
 
-            has_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip() or os.environ.get("CONSIZ_SERVER_URL", "").strip())
+            from consiz import llm
+            if llm.server_mode():
+                self.ai_status.configure(text="✓ Cloud is ready. Next you will sign in with Google.", fg=SUCCESS)
+                return
+            has_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
             self.ai_status.configure(
                 text="✓ Key saved — Cloud is ready."
                 if has_key
