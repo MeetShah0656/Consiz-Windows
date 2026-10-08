@@ -31,8 +31,10 @@ from consiz.platform.win32.theme import (
     FONT_TEXT,
 )
 
-WIDTH, HEIGHT = 490, 500
-PAD = 24
+from consiz.platform.win32.dpi import px
+
+WIDTH, HEIGHT = px(490), px(500)
+PAD = px(24)
 
 USER_TYPES = ["Student", "CA / Accountant / Finance", "Business owner", "Working professional", "Other"]
 REASONS = [
@@ -152,7 +154,7 @@ class OnboardingUI:
 
         # Top progress area
         top_bar = tk.Frame(win, bg=CREAM_100)
-        top_bar.place(x=PAD, y=14, width=WIDTH - 2 * PAD, height=36)
+        top_bar.place(x=PAD, y=px(14), width=WIDTH - 2 * PAD, height=px(36))
 
         self.step_lbl = tk.Label(
             top_bar,
@@ -178,7 +180,7 @@ class OnboardingUI:
 
         # Body area
         body_area = tk.Frame(win, bg=CREAM_100)
-        body_area.place(x=PAD, y=56, width=WIDTH - 2 * PAD, height=HEIGHT - 128)
+        body_area.place(x=PAD, y=px(56), width=WIDTH - 2 * PAD, height=HEIGHT - px(128))
 
         self.pages = [tk.Frame(body_area, bg=CREAM_100) for _ in range(4)]
         self._build_page0(self.pages[0])
@@ -188,11 +190,11 @@ class OnboardingUI:
 
         # Hairline divider above footer
         divider = tk.Frame(win, bg=CREAM_300, height=1)
-        divider.place(x=PAD, y=HEIGHT - 64, width=WIDTH - 2 * PAD)
+        divider.place(x=PAD, y=HEIGHT - px(64), width=WIDTH - 2 * PAD)
 
         # Footer actions
         footer = tk.Frame(win, bg=CREAM_100)
-        footer.place(x=PAD, y=HEIGHT - 54, width=WIDTH - 2 * PAD, height=40)
+        footer.place(x=PAD, y=HEIGHT - px(54), width=WIDTH - 2 * PAD, height=px(40))
 
         self.back_btn = tk.Button(
             footer,

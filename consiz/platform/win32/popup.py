@@ -20,6 +20,7 @@ from consiz.llm import (KIND_TITLES, Cancelled, CancelToken, LLMError, SignInReq
                         use_token)
 from consiz.models import CapturedContext, CaptureMethod, Result
 from consiz.output import _pretty_line
+from consiz.platform.win32 import dpi
 from consiz.platform.win32.theme import (
     CREAM_50,
     CREAM_100,
@@ -37,7 +38,7 @@ from consiz.platform.win32.theme import (
     FONT_TEXT,
 )
 
-WIDTH = 420
+WIDTH = dpi.px(420)
 PAD = 14
 SW_SHOWNOACTIVATE = 4
 SWP_NOACTIVATE = 0x0010
@@ -334,8 +335,8 @@ class PopupUI:
             self._win_w, self._win_h = win.winfo_width(), win.winfo_height()
 
         def do_resize(e):
-            nw = max(320, self._win_w + e.x_root - self._start_x)
-            nh = max(260, self._win_h + e.y_root - self._start_y)
+            nw = max(dpi.px(320), self._win_w + e.x_root - self._start_x)
+            nh = max(dpi.px(260), self._win_h + e.y_root - self._start_y)
             self.user_size = (nw, nh)
             win.geometry(f"{nw}x{nh}")
 
@@ -450,7 +451,7 @@ class PopupUI:
             self.chat.insert("end", "\n")
         self.chat.insert("end", "You\n", ("who_user",))
         bubble = tk.Label(self.chat, text=text, font=(FONT_TEXT, 10), fg=CREAM_50, bg=MAROON_700, justify="left",
-                          anchor="w", wraplength=max(180, int((self.window.winfo_width() or WIDTH) * 0.68)),
+                          anchor="w", wraplength=max(dpi.px(180), int((self.window.winfo_width() or WIDTH) * 0.68)),
                           padx=11, pady=6)
         self.chat.window_create("end", window=bubble, padx=2, pady=2)
         self.chat.insert("end", "\n")
@@ -589,9 +590,9 @@ class PopupUI:
         self._minimized = False
         self.min_btn.config(text="—")
         w, x, y = self.window.winfo_width(), self.window.winfo_x(), self.window.winfo_y()
-        sh = self.window.winfo_screenheight()
-        h = max(self._saved_h, 260)
-        y = max(10, min(y, sh - h - 10))                  # never let the restored window run off the screen
+        _l, top, _r, bottom = self._area()
+        h = max(self._saved_h, dpi.px(260))
+        y = max(top + 10, min(y, bottom - h - 10))        # never let the restored window run off its monitor
         self.window.geometry(f"{w}x{h}+{x}+{y}")
 
     def _fit_height(self) -> None:
@@ -603,20 +604,26 @@ class PopupUI:
             n = int(display_lines[0]) if display_lines else len(self._lines)
         except Exception:
             n = len(self._lines)
-        sh = self.window.winfo_screenheight()
-        want = min(max(200 + n * 19, 260), int(sh * 0.65))
+        _l, top, _r, bottom = self._area()
+        want = min(max(dpi.px(200) + n * dpi.px(19), dpi.px(260)), int((bottom - top) * 0.65))
         cur_h = self.window.winfo_height()
         if want > cur_h:
             x, y, w = self.window.winfo_x(), self.window.winfo_y(), self.window.winfo_width()
-            if y + want > sh - 10:
-                y = max(10, sh - want - 10)
+            if y + want > bottom - 10:
+                y = max(top + 10, bottom - want - 10)
             self.window.geometry(f"{w}x{want}+{x}+{y}")
 
-    def _compute_height(self) -> int:
+    def _area(self, point: tuple[int, int] | None = None) -> tuple[int, int, int, int]:
+        """Usable area (screen minus taskbar) of the monitor under `point`, or under this window (T-06)."""
+        if point is None:
+            point = (self.window.winfo_x() + 20, self.window.winfo_y() + 20) if self.window is not None else _get_cursor_pos()
+        return dpi.work_area_at(*point)
+
+    def _compute_height(self, area: tuple[int, int, int, int] | None = None) -> int:
         if self.user_size:
             return self.user_size[1]
-        sh = self.window.winfo_screenheight() if self.window else 900
-        return min(max(260, 200 + len(self._lines) * 19), int(sh * 0.65))
+        left, top, right, bottom = area or dpi.work_area_at(*_get_cursor_pos())
+        return min(max(dpi.px(260), dpi.px(200) + len(self._lines) * dpi.px(19)), int((bottom - top) * 0.65))
 
     def _show_at(self, point: tuple[int, int], title: str, meta: str) -> None:
         if self.window is None:
@@ -633,13 +640,10 @@ class PopupUI:
         self._set_chat_busy(False)
         self._set_placeholder()
 
-        px, py = point
+        area = dpi.work_area_at(*point)                    # the monitor the user is looking at, not just the main one
         w = self.user_size[0] if self.user_size else WIDTH
-        h = self._compute_height()
-        sw = self.window.winfo_screenwidth()
-        sh = self.window.winfo_screenheight()
-        x = min(max(px + 15, 10), sw - w - 10)
-        y = min(max(py + 15, 10), sh - h - 10)
+        h = self._compute_height(area)
+        x, y = dpi.place_near(point, (w, h), area, gap=dpi.px(15))
         self.window.geometry(f"{w}x{h}+{x}+{y}")
 
         # Show without stealing focus (W-07); typing is enabled only when the user clicks the input.

@@ -217,6 +217,10 @@ def main() -> int:
     from consiz import __version__, logs
     logs.setup()
     logs.get().info("Consiz %s starting (%s)", __version__, "exe" if getattr(sys, "frozen", False) else "source")
+    if sys.platform == "win32":
+        from consiz.platform.win32 import dpi
+        dpi.enable()                                  # sharp text on 125 % / 150 % screens; before any window exists (T-06)
+        logs.get().info("screen scale %.2f", dpi.scale())
     ap = argparse.ArgumentParser(description="As Conciz terminal MVP")
     ap.add_argument("--text", help="process this text instead of listening")
     ap.add_argument("--path", help="process this file/folder instead of listening")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 
 from consiz import auth
+from consiz.platform.win32.dpi import px
 from consiz.platform.win32.popup import _dispatch, _get_root
 from consiz.platform.win32.theme import (
     CREAM_50, CREAM_100, CREAM_200, CREAM_300,
@@ -12,8 +13,8 @@ from consiz.platform.win32.theme import (
     INK_MUTED, SUCCESS, WARNING, FONT_DISPLAY, FONT_TEXT,
 )
 
-WIDTH, HEIGHT = 420, 230
-PAD = 28
+WIDTH, HEIGHT = px(420), px(230)
+PAD = px(28)
 
 
 class LoginUI:
