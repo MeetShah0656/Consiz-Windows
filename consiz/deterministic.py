@@ -553,19 +553,41 @@ def format_file(md: dict) -> str:
 
 
 # ---------------------------------------------------------------- CSV
+# T-07: a huge table must not freeze the app or fill the memory. Only the first MAX_ROWS rows are read (the reader
+# stops there, so a 2 GB file costs the same as a 20 MB one) and the answer says so; a giant workbook is refused.
+MAX_ROWS = 100_000
+MAX_XLSX_BYTES = 150 * 1024 * 1024       # an .xlsx is a zip of XML: opening a huge one can use many GB of memory
+MAX_PASTED_CHARS = 20_000_000
+
+
 def analyze_csv(source: str, is_path: bool, delimiter: str | None = None) -> NumericalResult:
     """Compute stats deterministically. Raises ValueError with a DATA_MALFORMED-style message if unusable."""
     warnings: list[str] = []
+    is_book = is_path and source.lower().endswith((".xlsx", ".xls"))
+    if is_book:
+        try:
+            size = os.path.getsize(source)
+        except OSError:
+            size = 0
+        if size > MAX_XLSX_BYTES:
+            raise ValueError(f"this workbook is too big to analyse here ({human_size(size)}). "
+                             "Open it in Excel and select a smaller range, or save one sheet as CSV.")
+    elif not is_path and len(source) > MAX_PASTED_CHARS:
+        raise ValueError("that selection is too big to analyse. Select fewer rows.")
     try:
-        if is_path and source.lower().endswith((".xlsx", ".xls")):
-            df = pd.read_excel(source)
+        if is_book:
+            df = pd.read_excel(source, nrows=MAX_ROWS + 1)
         else:
             df = pd.read_csv(source if is_path else io.StringIO(source),
-                             sep=delimiter or None, engine="python", on_bad_lines="skip")
+                             sep=delimiter or None, engine="python", on_bad_lines="skip", nrows=MAX_ROWS + 1)
     except Exception as e:  # pandas raises many types
         raise ValueError(f"could not parse as tabular data: {e}") from e
     if df.empty or df.shape[1] < 1:
         raise ValueError("no rows or columns found")
+    sampled = len(df) > MAX_ROWS
+    if sampled:
+        df = df.iloc[:MAX_ROWS].copy()
+        warnings.append(f"very large table: only the first {MAX_ROWS:,} rows were analysed, so totals cover those rows only")
 
     # Try to coerce numeric-looking object columns ("1,200", "$45", "12%")
     for col in df.columns:
@@ -587,6 +609,8 @@ def analyze_csv(source: str, is_path: bool, delimiter: str | None = None) -> Num
 
     n = int(df.shape[0])
     stats: dict = {"shape": {"rows": n, "columns": int(df.shape[1])}, "columns": {}, "nulls": {}}
+    if sampled:
+        stats["shape"]["first_rows_only"] = True
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     for col in df.columns:
         nulls = int(df[col].isna().sum())
@@ -641,7 +665,8 @@ def _r(x) -> float:
 
 def format_numerical(res: NumericalResult, name: str = "") -> str:
     st = res.computed_stats
-    lines = [f"📊 {name + ' — ' if name else ''}{st['shape']['rows']:,} rows × {st['shape']['columns']} columns"]
+    first_only = " (first rows only: the table is larger)" if st["shape"].get("first_rows_only") else ""
+    lines = [f"📊 {name + ' — ' if name else ''}{st['shape']['rows']:,} rows × {st['shape']['columns']} columns{first_only}"]
     for col, c in st["columns"].items():
         col = _short(str(col), 20)
         if c["type"] == "numeric":

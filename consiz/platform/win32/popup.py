@@ -16,7 +16,8 @@ from typing import Callable
 
 from consiz.config import CONFIG
 from consiz.dictation import AudioRecorder, get_dictation_engine
-from consiz.llm import KIND_TITLES, Cancelled, CancelToken, LLMError, SignInRequired, current_token, use_token
+from consiz.llm import (KIND_TITLES, Cancelled, CancelToken, LLMError, SignInRequired, current_token, take_note,
+                        use_token)
 from consiz.models import CapturedContext, CaptureMethod, Result
 from consiz.output import _pretty_line
 from consiz.platform.win32.theme import (
@@ -920,6 +921,12 @@ class PopupUI:
         if text.upper().startswith("KIND"):
             text = text.split("\n", 1)[1] if "\n" in text else ""
         extra = res.on_complete(text) if getattr(res, "on_complete", None) and text and not failed else []
+        note = take_note()                                 # e.g. "answered offline because the server was unreachable"
+        if note:
+            if deferred:
+                held.append((note, True))
+            else:
+                post(self._append, note, True)
         for w in list(res.warnings) + extra:
             if deferred:
                 held.append((f"⚠ {w}", True))
@@ -996,6 +1003,9 @@ class PopupUI:
         if not text.strip() and not actions:
             post(self._append, "⚠ The AI sent an empty answer. Try asking again.")
             return
+        note = take_note()
+        if note:
+            post(self._append, note, True)
         self.history.append({"role": "user", "content": question})
         self.history.append({"role": "assistant", "content": text.strip() or "(suggested an action)"})
 

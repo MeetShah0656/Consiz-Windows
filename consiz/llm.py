@@ -591,8 +591,49 @@ def _health_ollama() -> tuple[bool, str]:
 # ---------------------------------------------------------------- public API
 def stream(task: str, content: str, hint: str = "") -> Iterator[str]:
     """Yield response tokens. Raises LLMError if the backend is unavailable."""
-    src = _stream_ollama(task, content, hint) if CONFIG.provider == "ollama" else _stream_openrouter(task, content, hint)
-    return _guard(src)
+    if CONFIG.provider == "ollama":
+        return _guard(_stream_ollama(task, content, hint))
+    return _guard(_with_offline_fallback(_stream_openrouter(task, content, hint),
+                                         lambda: _stream_ollama(task, content, hint)))
+
+
+# ---------------------------------------------------------------- fallback chain (T-04): server -> offline -> clear message
+def _offline_fallback_allowed() -> bool:
+    from . import prefs
+    return bool(prefs.get("offline_fallback", True))
+
+
+def take_note() -> str:
+    """A one-line note about HOW the last answer on this thread was produced (e.g. offline), shown once, then cleared."""
+    note = getattr(_LOCAL, "note", "")
+    _LOCAL.note = ""
+    return note
+
+
+def _with_offline_fallback(primary: Iterator[str], make_fallback) -> Iterator[str]:
+    """Stream from the Consiz server. ONLY when the server cannot be reached or is overloaded (LLMUnavailable) and
+    nothing has been shown yet, answer from local Ollama if it is installed and running. Rules, limits, sign-in and
+    bad-request errors are never bypassed. If Ollama is not available the original error is raised unchanged."""
+    started = False
+    try:
+        for piece in primary:
+            started = True
+            yield piece
+        return
+    except LLMUnavailable as why:
+        if started or not _offline_fallback_allowed():
+            raise
+        tok = current_token()
+        if tok:
+            tok.check()
+        ok, _info = _health_ollama()
+        if not ok:
+            raise
+        _LOCAL.note = (f"The Consiz server could not be reached, so this was answered offline by {CONFIG.ollama_model} "
+                       f"on your PC. It can be slower and less accurate.")
+        from consiz import logs
+        logs.get().warning("answered offline (%s): %s", CONFIG.ollama_model, why)
+    yield from make_fallback()
 
 
 def _text_only(messages: list[dict]) -> list[dict]:
@@ -607,31 +648,34 @@ def _text_only(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _stream_ollama_messages(messages: list[dict]) -> Iterator[str]:
+    messages = _text_only(messages)
+    try:
+        import ollama
+    except (ImportError, ModuleNotFoundError) as e:
+        raise LLMError("ollama package not installed. Run: pip install ollama") from e
+    client = ollama.Client(host=CONFIG.ollama_host, timeout=getattr(CONFIG, "ollama_timeout_s", 180.0))
+    try:
+        try:
+            it = client.chat(model=CONFIG.ollama_model, messages=messages, stream=True, think=False,
+                             options={"temperature": CONFIG.temperature})
+        except TypeError:
+            it = client.chat(model=CONFIG.ollama_model, messages=messages, stream=True,
+                             options={"temperature": CONFIG.temperature})
+        for ch in it:
+            piece = ch.get("message", {}).get("content", "") if isinstance(ch, dict) else ch.message.content
+            if piece:
+                yield piece
+    except Exception as e:
+        raise LLMError(f"{type(e).__name__}: {e}") from e
+
+
 def stream_messages(messages: list[dict]) -> Iterator[str]:
     """Stream a raw message list (used for follow-up questions)."""
     if CONFIG.provider == "ollama":
-        messages = _text_only(messages)
-        try:
-            import ollama
-        except (ImportError, ModuleNotFoundError) as e:
-            raise LLMError("ollama package not installed. Run: pip install ollama") from e
-        client = ollama.Client(host=CONFIG.ollama_host, timeout=getattr(CONFIG, "ollama_timeout_s", 180.0))
-        def gen():
-            try:
-                try:
-                    it = client.chat(model=CONFIG.ollama_model, messages=messages, stream=True, think=False,
-                                     options={"temperature": CONFIG.temperature})
-                except TypeError:
-                    it = client.chat(model=CONFIG.ollama_model, messages=messages, stream=True,
-                                     options={"temperature": CONFIG.temperature})
-                for ch in it:
-                    piece = ch.get("message", {}).get("content", "") if isinstance(ch, dict) else ch.message.content
-                    if piece:
-                        yield piece
-            except Exception as e:
-                raise LLMError(f"{type(e).__name__}: {e}") from e
-        return _guard(gen())
-    return _guard(_stream_openrouter_messages(messages))
+        return _guard(_stream_ollama_messages(messages))
+    return _guard(_with_offline_fallback(_stream_openrouter_messages(messages),
+                                         lambda: _stream_ollama_messages(messages)))
 
 
 def _guard(src: Iterator[str]) -> Iterator[str]:
