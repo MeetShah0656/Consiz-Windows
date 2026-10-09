@@ -136,6 +136,10 @@ def on_trigger(source: str):
             output.notify("nothing selected — click passed through to the app")
             return "passthrough"
         # Keyboard hotkey with nothing selected: offer to look at the PC (it asks permission first).
+        pic = _picture_on_clipboard(ctx)
+        if pic is not None:
+            POPUP.show_result(pic)
+            return
         why = ctx.note if "administrator" in (ctx.note or "") else "Nothing was selected, so this is Ask about my PC."
         if on_pc_trigger("nothing-selected", note=why):
             return
@@ -144,6 +148,43 @@ def on_trigger(source: str):
         POPUP.show_result(res)
     else:
         output.render(res)
+
+
+def _confirm_picture(label: str) -> bool:
+    """Asked EVERY time a picture would be sent to the AI: private details in a picture cannot be removed first."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    msg = ("Consiz can explain this picture with the AI:" + chr(10) + chr(10) + "  " + label[:90] + chr(10) + chr(10)
+           + "The picture itself is sent (shrunk), and passwords or other private details in a picture cannot be removed "
+           "first. Nothing is stored." + chr(10) + chr(10) + "Send it?")
+    return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - explain a picture", 0x124) == 6      # Yes/No, No is the default
+
+
+import consiz.router as _router                    # noqa: E402 - the router asks this box before it sends a picture file
+_router.PICTURE_CONSENT = _confirm_picture
+
+_DECLINED_PICTURE: list = [None]          # the clipboard picture the person already said no to: do not ask again for it
+
+
+def _picture_on_clipboard(ctx):
+    """Shortcut pressed with nothing selected while a picture (a screenshot) is on the clipboard: offer to explain it.
+    Returns a Result, or None to carry on (no picture, or the person said no)."""
+    if sys.platform != "win32" or "administrator" in (ctx.note or ""):
+        return None
+    import hashlib
+    from consiz.platform.win32.capture import clipboard_picture
+    img = clipboard_picture()
+    if img is None:
+        return None
+    fingerprint = (img.size, hashlib.md5(img.tobytes()).hexdigest())
+    if fingerprint == _DECLINED_PICTURE[0]:
+        return None
+    if not _confirm_picture("the picture on your clipboard (for example a screenshot), " + f"{img.size[0]}x{img.size[1]}"):
+        _DECLINED_PICTURE[0] = fingerprint
+        return None
+    from consiz import router
+    return router.picture_result(img, "picture from the clipboard", ctx.source_app)
 
 
 _VOICE_CANCEL = threading.Event()
@@ -413,7 +454,9 @@ def main() -> int:
                 notify=lambda m: _dispatch(POPUP._set_meta, m), capture_image=_capture_window_image)
             POPUP.show_followup(question, stream)
             return
-        msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question)
+        from consiz import pictures
+        msgs = llm.chat_messages(POPUP.context, POPUP.last_answer, list(POPUP.history), question,
+                                 images=pictures.remembered(POPUP.context))     # a chat about a picture can still see it
         POPUP.show_followup(question, llm.stream_messages(msgs))
 
     def dictate_handler(ctx: CapturedContext, instruction) -> None:

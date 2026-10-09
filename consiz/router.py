@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 from . import deterministic as det
 from . import llm
@@ -127,7 +127,42 @@ def _folder(ctx: CapturedContext, cls) -> Result:
     return r
 
 
+# Asked EVERY time a picture would be sent: a picture cannot have secrets removed first. Set by main.py (a Yes/No box);
+# without it (terminal use, other platforms) pictures are never sent.
+PICTURE_CONSENT: Callable[[str], bool] | None = None
+
+
+def picture_result(source, label: str, app: str) -> Result:
+    """Explain a picture (path or PIL image). The caller has already asked the person (see PICTURE_CONSENT)."""
+    from . import pictures
+    try:
+        b64 = pictures.to_jpeg_b64(source)
+    except pictures.PictureError as e:
+        return error_result(ErrorState.UNSUPPORTED_CONTENT, str(e), app)
+    context = pictures.remember(label, [b64])
+    return Result(title="Picture", content_type="FILE", source_app=app, source_content=context,
+                  stream=llm.stream_messages(llm.image_messages(label, [b64])))
+
+
+def _picture_file(ctx: CapturedContext) -> Result:
+    import os
+    from . import pictures
+    path = ctx.raw_content
+    name = os.path.basename(path)
+    if pictures.is_unreadable_picture(path):
+        return Result(title="Picture", content_type="FILE", body=f"{name}\n(Consiz cannot open this kind of picture "
+                      f"({os.path.splitext(name)[1].lower()}) yet. Open it and take a screenshot, then use that.)")
+    if PICTURE_CONSENT is None or not PICTURE_CONSENT(name):
+        return Result(title="Picture", content_type="FILE",
+                      body=det.format_file(det.file_metadata(path)) + "\nNot sent to the AI: a picture is only read "
+                      "after you say yes.")
+    return picture_result(path, name, ctx.source_app)
+
+
 def _file(ctx: CapturedContext) -> Result:
+    from . import pictures
+    if pictures.is_picture_file(ctx.raw_content) or pictures.is_unreadable_picture(ctx.raw_content):
+        return _picture_file(ctx)
     md = det.file_metadata(ctx.raw_content)
     body = det.format_file(md)
     if md["preview"]:

@@ -516,6 +516,17 @@ def _path_context(app: str, paths: list[str]) -> CapturedContext:
     return CapturedContext(source_app=app, capture_method=method, raw_content=paths[0], paths=paths)
 
 
+def clipboard_picture():
+    """The picture on the clipboard (for example a screenshot from Win+Shift+S) as a PIL image, or None. Never text, never
+    files. Reading it changes nothing."""
+    try:
+        from PIL import Image, ImageGrab
+        got = ImageGrab.grabclipboard()
+        return got if isinstance(got, Image.Image) else None
+    except Exception:
+        return None
+
+
 def _admin_note(app: str, hwnd: int) -> str:
     """Why nothing was found, when the real reason is that the window runs as administrator (T-16); else ''."""
     try:
