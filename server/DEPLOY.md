@@ -14,6 +14,10 @@
   - `DATABASE_URL` — recommended, see "Keep the daily limits" below
   - `ALLOWED_EMAILS` — optional; comma-separated; empty = any verified Google account
 
+## Publish a download (the home page button) and announce it
+- `python scripts/make_release.py --smoke` builds `release\Consiz-<version>-windows.zip` + checksum and prints the exact commands. See `docs/DISTRIBUTION.md`.
+- Render > Environment: `DOWNLOAD_URL` (https link to the zip), `LATEST_VERSION`, optional `DOWNLOAD_SHA256`. The home page then shows a **Download** button and `/download` forwards to the file.
+
 ## Announce an app update (no code change)
 - Build the installer (`python scripts/build_installer.py`), upload it somewhere with an https link.
 - Render > Environment: `LATEST_VERSION` = the new version, `DOWNLOAD_URL` = that link. Every running app learns about it within a day and shows a tray item "Download Consiz x.y.z".

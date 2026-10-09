@@ -11,6 +11,7 @@ run in the thread pool. `python scripts/load_test.py` measures it.
 Run:  pip install -r server/requirements.txt
       uvicorn server.app:app --host 0.0.0.0 --port 8080
 Env (required): OPENROUTER_API_KEY, GOOGLE_CLIENT_ID (same desktop client the app uses)
+Env (download page): DOWNLOAD_URL (https only), LATEST_VERSION, DOWNLOAD_SHA256 -> the home page's Download button, GET /download
 Env (updates): LATEST_VERSION, MIN_VERSION, DOWNLOAD_URL, RELEASE_NOTES  (see GET /version; MIN_VERSION makes the server
   refuse apps older than that with HTTP 426, so an old app cannot keep spending money)
 Env (operator): METRICS_TOKEN (turns on GET /metrics, sent as header X-Metrics-Token), MAX_BODY_BYTES (5000000)
@@ -38,7 +39,7 @@ import httpx
 import requests
 from starlette.concurrency import run_in_threadpool
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from google.auth.transport import requests as g_requests
 from google.oauth2 import id_token as g_id_token
 
@@ -561,6 +562,8 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name
 body{{font-family:Segoe UI,Arial,sans-serif;background:#F8F1E3;color:#43151B;margin:0;line-height:1.6}}
 main{{max-width:760px;margin:0 auto;padding:40px 20px}}h1{{color:#611E29}}h3{{color:#611E29;margin-top:28px}}
 a{{color:#7A2835}}li{{margin:6px 0}}footer{{margin-top:40px;font-size:14px}}
+a.btn{{display:inline-block;background:#7A2835;color:#FFFCF6;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600}}
+code{{background:#EFE3D0;padding:1px 5px;border-radius:4px;font-size:90%}}
 </style></head><body><main>{body}<footer><a href="/">Home</a> &middot; <a href="/privacy">Privacy Policy</a> &middot;
 Contact: <a href="mailto:{contact}">{contact}</a></footer></main></body></html>"""
 
@@ -576,6 +579,44 @@ def _page(title: str, body: str) -> str:
     return _PAGE.format(verify=verify, title=title, body=body, contact=_contact())
 
 
+def _download_url() -> str:
+    """The one place the installer or zip lives (DOWNLOAD_URL on the server). Only an https link is ever offered."""
+    url = _cfg("DOWNLOAD_URL")
+    return url if url.lower().startswith("https://") else ""
+
+
+def _download_html() -> str:
+    """The 'get it' part of the home page: a button, the four steps, and the honest note about Windows' warning."""
+    version = _cfg("LATEST_VERSION")
+    if _download_url():
+        button = (f'<p><a class="btn" href="/download">Download {APP_NAME} for Windows'
+                  f'{" " + version if version else ""}</a></p>')
+        sha = _cfg("DOWNLOAD_SHA256")
+        if sha:
+            button += f"<p style='font-size:13px'>Checksum (SHA-256): <code>{sha}</code></p>"
+    else:
+        button = "<p><i>The download link has not been published yet. Please ask the person who shared this page with you.</i></p>"
+    return (
+        "<h3>Get it for Windows</h3>" + button +
+        "<ol><li>Download the file and unzip it (right-click, <b>Extract all</b>).</li>"
+        f"<li>Open the <b>{APP_NAME}</b> folder and double-click <b>{APP_NAME}.exe</b>.</li>"
+        "<li>Windows may say <i>Windows protected your PC</i>, because the app is new and not yet signed. Click "
+        "<b>More info</b>, then <b>Run anyway</b>.</li>"
+        "<li>Sign in with Google once. Then select any text and press the middle mouse button (or Ctrl+Alt+S).</li></ol>"
+        "<p>You need Windows 10 or 11 (64-bit) and an internet connection. To remove it, close it from the tray icon and "
+        "delete the folder.</p>")
+
+
+@app.get("/download")
+def download():
+    """Send people to the current download (set DOWNLOAD_URL on the server: the link can change without a code change)."""
+    url = _download_url()
+    if not url:
+        return HTMLResponse(_page(APP_NAME, f"<h1>{APP_NAME}</h1><p>The download link has not been published yet.</p>"),
+                            status_code=404)
+    return RedirectResponse(url, status_code=302)
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return _page(APP_NAME, (
@@ -583,6 +624,7 @@ def home():
         f"<p><b>{APP_NAME}</b> is a Windows desktop app that explains anything on your screen. Select some text "
         "or a file, press the middle mouse button, and a small window shows a short, simple explanation, summary, "
         "translation or answer. You can then ask follow-up questions in the same chat window.</p>"
+        + _download_html() +
         "<h3>Why sign in with Google?</h3>"
         f"<p>{APP_NAME} uses Google Sign-In only to know who is using the service, so we can apply a fair daily "
         "limit per person and prevent abuse. We request only your basic profile (name and email address). "
