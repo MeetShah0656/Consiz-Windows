@@ -332,6 +332,9 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     for mode in mousegate.MODES:
         _radio(m, labels[mode], mode_var, mode, lambda: (prefs.set("trigger_mode", mode_var.get()), say("Saved ✓")))
 
+    _note(m, "Windows that run as administrator cannot be reached by the mouse or read by Consiz, unless Consiz is "
+             "also started as administrator (right-click Consiz.exe, then Run as administrator).")
+
     _section(m, "Pause")
     paused_var = tk.BooleanVar(value=pause.is_paused())
     _check(m, "Pause Consiz now (mouse and shortcuts go back to your apps)", paused_var,

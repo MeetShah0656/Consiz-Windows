@@ -136,7 +136,8 @@ def on_trigger(source: str):
             output.notify("nothing selected — click passed through to the app")
             return "passthrough"
         # Keyboard hotkey with nothing selected: offer to look at the PC (it asks permission first).
-        if on_pc_trigger("nothing-selected", note="Nothing was selected, so this is Ask about my PC."):
+        why = ctx.note if "administrator" in (ctx.note or "") else "Nothing was selected, so this is Ask about my PC."
+        if on_pc_trigger("nothing-selected", note=why):
             return
     res = process(ctx)
     if POPUP is not None:

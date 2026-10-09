@@ -53,7 +53,8 @@ def request_admin_elevation() -> bool:
     if is_admin():
         return True
 
-    params = " ".join([f'"{arg}"' for arg in sys.argv])
+    args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv      # a packaged exe IS the program: no script path
+    params = " ".join([f'"{arg}"' for arg in args])
     ret = shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
     if ret > 32:
         sys.exit(0)

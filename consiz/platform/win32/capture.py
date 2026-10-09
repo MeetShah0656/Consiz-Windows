@@ -516,6 +516,15 @@ def _path_context(app: str, paths: list[str]) -> CapturedContext:
     return CapturedContext(source_app=app, capture_method=method, raw_content=paths[0], paths=paths)
 
 
+def _admin_note(app: str, hwnd: int) -> str:
+    """Why nothing was found, when the real reason is that the window runs as administrator (T-16); else ''."""
+    try:
+        from .elevation import ELEVATED_NOTE, window_needs_admin
+        return ELEVATED_NOTE.format(app=app) if window_needs_admin(hwnd) else ""
+    except Exception:
+        return ""
+
+
 def capture() -> CapturedContext:
     init_com_for_thread()
     try:
@@ -557,7 +566,8 @@ def capture() -> CapturedContext:
             return ctx
 
         if definitely_empty:
-            return CapturedContext(source_app=app, capture_method=CaptureMethod.NONE, raw_content="")   # fast path
+            return CapturedContext(source_app=app, capture_method=CaptureMethod.NONE, raw_content="",
+                                   note=_admin_note(app, hwnd))                                           # fast path
 
         # 3. Clipboard fallback (non-destructive) — never in terminals / password managers
         if not may_simulate_copy(app):
@@ -584,7 +594,8 @@ def capture() -> CapturedContext:
                 ctx.source_meta = browser_info
             return ctx
 
-        return CapturedContext(source_app=app, capture_method=CaptureMethod.NONE, raw_content="")
+        return CapturedContext(source_app=app, capture_method=CaptureMethod.NONE, raw_content="",
+                               note=_admin_note(app, hwnd))
     finally:
         uninit_com_for_thread()
 
