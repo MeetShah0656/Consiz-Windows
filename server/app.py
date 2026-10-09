@@ -1,4 +1,4 @@
-"""Conciz backend: the ONLY place the OpenRouter key lives.
+"""Consiz backend: the ONLY place the OpenRouter key lives.
 
 The desktop app sends a Google ID token; we verify it (signature, audience, expiry, verified email),
 apply limits, force our own model/limits, and stream the answer back.
@@ -13,6 +13,7 @@ Run:  pip install -r server/requirements.txt
 Env (required): OPENROUTER_API_KEY, GOOGLE_CLIENT_ID (same desktop client the app uses)
 Env (updates): LATEST_VERSION, MIN_VERSION, DOWNLOAD_URL, RELEASE_NOTES  (see GET /version; MIN_VERSION makes the server
   refuse apps older than that with HTTP 426, so an old app cannot keep spending money)
+Env (operator): METRICS_TOKEN (turns on GET /metrics, sent as header X-Metrics-Token), MAX_BODY_BYTES (5000000)
 Env (optional): OPENROUTER_MODEL, OPENROUTER_FALLBACKS, MAX_OUTPUT_TOKENS (5000), ALLOWED_EMAILS (comma list),
   DAILY_LIMIT (50 answers per user/day), IP_DAILY_LIMIT (300 per IP/day), RATE_PER_MIN (12 per user),
   MAX_INPUT_CHARS (40000), MAX_MESSAGES (30), MAX_IMAGES (2 pictures of windows per request),
@@ -22,6 +23,7 @@ Env (optional): OPENROUTER_MODEL, OPENROUTER_FALLBACKS, MAX_OUTPUT_TOKENS (5000)
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sqlite3
@@ -56,7 +58,7 @@ async def _lifespan(_app):
         _http["client"] = None
 
 
-app = FastAPI(title="Conciz backend", lifespan=_lifespan)
+app = FastAPI(title="Consiz backend", lifespan=_lifespan)
 _recent: dict[str, deque] = defaultdict(deque)      # per-user timestamps for the per-minute limit
 
 
@@ -116,7 +118,7 @@ async def _open_upstream(payload: dict, key: str):
     client = _http_client()
     for attempt in (1, 2):
         request = client.build_request("POST", OPENROUTER_URL, json=payload, headers={
-            "Authorization": f"Bearer {key}", "Content-Type": "application/json", "X-Title": "As Conciz",
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json", "X-Title": "Consiz",
             "Accept-Encoding": "identity"})                  # plain bytes: lowest latency for a stream of tiny chunks
         try:
             return await client.send(request, stream=True)
@@ -127,6 +129,19 @@ async def _open_upstream(payload: dict, key: str):
 
 def _cfg(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+# ------------------------------------------------------------------ counters for GET /metrics (numbers only, no user data)
+_STARTED = time.time()
+_m_lock = threading.Lock()
+_metrics: dict = {"requests": 0, "chat_started": 0, "chat_in_flight": 0, "status": defaultdict(int),
+                  "events": defaultdict(int), "chat_seconds": deque(maxlen=500)}
+
+
+def _count(event: str) -> None:
+    """Count something that happened (answers refused, AI busy, database trouble...)."""
+    with _m_lock:
+        _metrics["events"][event] += 1
 
 
 # ------------------------------------------------------------------ storage (SQLite or Postgres)
@@ -159,7 +174,7 @@ def _pg_pool():
         if _pool["p"] is None:
             from psycopg2 import pool
             _pool["p"] = pool.ThreadedConnectionPool(
-                1, _DB_CONNECTIONS, _cfg("DATABASE_URL"), connect_timeout=8,
+                1, _DB_CONNECTIONS, _cfg("DATABASE_URL"), connect_timeout=5,
                 keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
         return _pool["p"]
 
@@ -215,16 +230,49 @@ def _db():
             con.close()
 
 
+_DB_RETRY_AFTER = 30.0                                  # after a failure the database is left alone this long
+_db_state: dict = {"down_until": 0.0, "error": ""}
+
+
+class DatabaseDown(Exception):
+    """The database failed a moment ago and is not being asked again yet (callers fall back to memory)."""
+
+
+def database_down() -> bool:
+    return time.time() < _db_state["down_until"]
+
+
+def _is_stale_connection(e: Exception) -> bool:
+    """A pooled connection the database closed while idle: worth one retry on a fresh one. A database that cannot be
+    reached at all (refused, timed out) is NOT retried: that would double the wait."""
+    text = str(e).lower()
+    return _is_connection_error(e) and any(s in text for s in (
+        "closed the connection", "connection already closed", "ssl connection has been closed", "terminating connection",
+        "connection reset", "broken pipe", "connection not open"))
+
+
 def _run_db(work):
     """work(cursor, placeholder) -> result, in one transaction. A pooled connection the database closed while
-    idle is dropped and the work is retried once on a fresh one."""
+    idle is dropped and the work is retried once on a fresh one. If the database cannot be reached, it is not asked
+    again for 30 s: every request would otherwise wait for its connect time-out (T-03)."""
+    if _use_pg() and database_down():
+        raise DatabaseDown(_db_state["error"])
     for attempt in (1, 2):
         try:
             with _db() as (cur, ph):
-                return work(cur, ph)
+                result = work(cur, ph)
+            if _db_state["down_until"]:
+                _db_state["down_until"] = 0.0
+                print("[server] database is back", flush=True)
+            return result
         except Exception as e:
-            if attempt == 1 and _is_connection_error(e):
+            if attempt == 1 and _is_stale_connection(e):
                 continue
+            if _is_connection_error(e):
+                _db_state.update(down_until=time.time() + _DB_RETRY_AFTER, error=type(e).__name__)
+                _count("database_down")
+                print(f"[server] database unreachable ({type(e).__name__}); using memory limits for "
+                      f"{int(_DB_RETRY_AFTER)} s", flush=True)
             raise
 
 
@@ -269,10 +317,12 @@ def _take_quota(info: dict, ip: str) -> None:
     try:
         over = _run_db(lambda cur, ph: _bump_all(cur, ph, keys))
     except Exception as e:                                   # database down: stay up with in-memory limits
-        print(f"[server] database unavailable ({type(e).__name__}); using in-memory limits", flush=True)
+        if not isinstance(e, DatabaseDown):
+            print(f"[server] database unavailable ({type(e).__name__}); using in-memory limits", flush=True)
         over = _bump_memory(keys)
     if over:
         what, limit = over
+        _count("refused_daily_limit")
         raise HTTPException(429, f"{what} limit of {limit} answers reached. Try again tomorrow.")
 
 
@@ -339,6 +389,8 @@ def _record_spend(sub: str, model: str, tap: _UsageTap) -> None:
 
     try:
         _run_db(work)
+    except DatabaseDown:
+        pass                                                # already reported once; the answer was not harmed
     except Exception as e:
         print(f"[server] could not record spend ({type(e).__name__})", flush=True)
 
@@ -601,6 +653,8 @@ def health(deep: int = 0):
     """Cheap by default (the app pings it to wake the server). `?deep=1` also checks the database."""
     storage = "postgres" if _use_pg() else "sqlite"
     out = {"ok": True, "storage": storage}
+    if _use_pg() and database_down():                         # answers still work, with in-memory limits (T-03)
+        out.update(degraded=True, db_error=_db_state["error"])
     if deep:
         try:
             _run_db(lambda cur, ph: cur.execute("SELECT 1"))
@@ -637,7 +691,7 @@ async def chat(body: dict, request: Request, authorization: str | None = Header(
     cap = int(_cfg("MAX_OUTPUT_TOKENS", "5000"))
     # Defaults from `python scripts/model_check.py` (fastest models that answered every time); re-run it monthly.
     model = _cfg("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
-    fallbacks = [m.strip() for m in _cfg("OPENROUTER_FALLBACKS", "inclusionai/ling-3.0-flash-sante:free").split(",")
+    fallbacks = [m.strip() for m in _cfg("OPENROUTER_FALLBACKS", "nvidia/nemotron-3.5-lightning:free,poolside/laguna-xs-2.1:free").split(",")
                  if m.strip()]
     wanted = [model, *fallbacks]
     if _has_images(messages):                       # the server decides from the content, not from a client flag
@@ -658,6 +712,7 @@ async def chat(body: dict, request: Request, authorization: str | None = Header(
     try:
         upstream = await _open_upstream(payload, key)
     except (httpx.HTTPError, OSError) as e:
+        _count("ai_unreachable")
         print(f"[server] AI provider unreachable: {type(e).__name__}: {str(e)[:120]}", flush=True)
         await run_in_threadpool(_refund_quota, info, ip)
         raise HTTPException(502, "The AI provider is unreachable.")
@@ -671,9 +726,11 @@ async def chat(body: dict, request: Request, authorization: str | None = Header(
         if upstream.status_code == 429:
             # The whole product shares ONE OpenRouter key: 50 free-model requests/day (1000 with 10 credits).
             if "free-models-per-day" in detail:
+                _count("ai_allowance_used_up")
                 print("[server] OpenRouter free daily allowance is used up", flush=True)
                 raise HTTPException(503, "Today's shared free AI allowance is used up. It resets at 5:30 AM IST "
                                          "(midnight UTC). Please try again then.", headers={"Retry-After": "3600"})
+            _count("ai_busy")
             raise HTTPException(503, "The AI is busy right now. Please try again in a moment.",
                                 headers={"Retry-After": "10"})
         raise HTTPException(502 if upstream.status_code >= 500 else upstream.status_code,
@@ -692,6 +749,99 @@ async def chat(body: dict, request: Request, authorization: str | None = Header(
                 await run_in_threadpool(_record_spend, info["sub"], models[0], tap)
 
     return StreamingResponse(relay(), media_type="text/event-stream")
+
+
+@app.get("/metrics")
+def metrics(x_metrics_token: str | None = Header(default=None)):
+    """Counters for the operator (T-14). Off (404) unless METRICS_TOKEN is set; then it needs that token in the
+    X-Metrics-Token header. Numbers only: no user, question or answer is in here."""
+    token = _cfg("METRICS_TOKEN")
+    if not token or not hmac.compare_digest(token, x_metrics_token or ""):
+        raise HTTPException(404, "Not found")
+    with _m_lock:
+        secs = sorted(_metrics["chat_seconds"])
+        pick = lambda q: round(secs[min(len(secs) - 1, int(q * len(secs)))], 2) if secs else None  # noqa: E731
+        return {"uptime_s": int(time.time() - _STARTED), "requests": _metrics["requests"],
+                "chat_started": _metrics["chat_started"], "chat_in_flight": _metrics["chat_in_flight"],
+                "status": dict(_metrics["status"]), "events": dict(_metrics["events"]),
+                "chat_seconds": {"p50": pick(0.5), "p95": pick(0.95), "samples": len(secs)},
+                "database": {"storage": "postgres" if _use_pg() else "sqlite", "down": _use_pg() and database_down(),
+                             "error": _db_state["error"] if database_down() else ""},
+                "users_in_memory": len(_recent)}
+
+
+class _TooBig(Exception):
+    pass
+
+
+class _Guard:
+    """Plain ASGI middleware, in front of everything: (1) refuses a request body over MAX_BODY_BYTES (5 MB; two pictures
+    plus text need about 4 MB) BEFORE it is read and parsed, whether the size is declared or streamed; (2) counts requests,
+    status codes, answers in flight and how long answers take, for /metrics."""
+
+    def __init__(self, app):
+        self.inner = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.inner(scope, receive, send)
+        limit = int(_cfg("MAX_BODY_BYTES", "5000000"))
+        is_chat = scope.get("path") == "/v1/chat/completions"
+        declared = dict(scope.get("headers") or []).get(b"content-length", b"")
+        state = {"status": 0}
+        t0 = time.time()
+        with _m_lock:
+            _metrics["requests"] += 1
+            if is_chat:
+                _metrics["chat_started"] += 1
+                _metrics["chat_in_flight"] += 1
+
+        async def too_big():
+            _count("refused_too_big")
+            body = b'{"detail":"That request is too big."}'
+            state["status"] = 413
+            await send({"type": "http.response.start", "status": 413, "headers": [
+                (b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+            await send({"type": "http.response.body", "body": body})
+
+        async def counting_send(message):
+            if state.get("cut"):                              # the 413 was already sent: ignore what the app tries next
+                return
+            if message["type"] == "http.response.start":
+                state["status"] = message["status"]
+            await send(message)
+
+        seen = 0
+
+        async def counting_receive():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > limit:
+                    await too_big()                           # answer at once; FastAPI would turn an error here into a 400
+                    state["cut"] = True
+                    raise _TooBig()
+            return message
+
+        try:
+            if declared.isdigit() and int(declared) > limit:
+                await too_big()
+            else:
+                try:
+                    await self.inner(scope, counting_receive, counting_send)
+                except _TooBig:
+                    pass
+        finally:
+            with _m_lock:
+                if is_chat:
+                    _metrics["chat_in_flight"] -= 1
+                    if state["status"] == 200:
+                        _metrics["chat_seconds"].append(time.time() - t0)
+                _metrics["status"][str(state["status"] or 0)] += 1
+
+
+app.add_middleware(_Guard)
 
 
 # Keep this LAST: a catch-all path would otherwise shadow the fixed routes above.

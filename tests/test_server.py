@@ -269,7 +269,7 @@ def test_ordinary_provider_rate_limit_says_busy_not_used_up(client, monkeypatch)
 def test_default_models_are_the_measured_fast_ones(client):
     client.post("/v1/chat/completions", json=BODY, headers=GOOD)
     models = client.sent["payload"]["models"]
-    assert models[0] == "nvidia/nemotron-3-super-120b-a12b:free" and models[1].endswith("ling-3.0-flash-sante:free")
+    assert models[0] == "nvidia/nemotron-3-super-120b-a12b:free" and models[1] == "nvidia/nemotron-3.5-lightning:free"
     assert models[-1] == srv.AUTO_ROUTER
 
 
@@ -321,3 +321,98 @@ def test_spend_table_failure_never_breaks_an_answer(client, monkeypatch):
     monkeypatch.setattr(srv, "_run_db", broken_for_spend)
     r = client.post("/v1/chat/completions", json=BODY, headers=GOOD)
     assert r.status_code == 200 and "hi" in r.text
+
+
+# ---------------------------------------------------------------- T-03: a dead database is not asked again and again
+def _connection_error(message="could not connect to server: Connection timed out"):
+    class OperationalError(Exception):
+        pass
+    OperationalError.__module__ = "psycopg2"
+    return OperationalError(message)
+
+
+@pytest.fixture
+def pg_down(client, monkeypatch):
+    """Postgres is configured but every connection attempt fails, as when Neon is down."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db.invalid/x")
+    monkeypatch.setitem(srv._db_state, "down_until", 0.0)
+    attempts = []
+
+    def no_pool():
+        attempts.append(1)
+        raise _connection_error()
+
+    monkeypatch.setattr(srv, "_pg_pool", no_pool)
+    yield attempts
+    srv._db_state.update(down_until=0.0, error="")
+
+
+def test_a_dead_database_is_asked_once_then_left_alone(pg_down, client):
+    codes = [client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code for _ in range(5)]
+    assert codes == [200] * 5                                            # answers keep coming
+    assert len(pg_down) == 1, f"the dead database was contacted {len(pg_down)} times"
+    health = client.get("/health").json()
+    assert health["ok"] is True and health["degraded"] is True and health["db_error"] == "OperationalError"
+
+
+def test_the_database_is_tried_again_after_the_pause_and_recovery_is_noticed(pg_down, client, monkeypatch):
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert srv.database_down()
+    srv._db_state["down_until"] = 0.0                                    # the 30 s pause is over
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    assert len(pg_down) == 2, "asked again after the pause"
+    monkeypatch.setattr(srv, "_use_pg", lambda: False)                   # the database is back (SQLite stands in)
+    assert srv._run_db(lambda cur, ph: 1) == 1 and not srv.database_down()
+    assert "degraded" not in client.get("/health").json() or not srv._use_pg()
+
+
+def test_memory_limits_still_apply_while_the_database_is_down(pg_down, client, monkeypatch):
+    monkeypatch.setenv("DAILY_LIMIT", "2")
+    codes = [client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_an_idle_connection_the_database_closed_is_retried_but_a_dead_server_is_not():
+    assert srv._is_stale_connection(_connection_error("server closed the connection unexpectedly"))
+    assert srv._is_stale_connection(_connection_error("SSL connection has been closed unexpectedly"))
+    assert not srv._is_stale_connection(_connection_error("could not connect to server: Connection refused"))
+    assert not srv._is_stale_connection(ValueError("closed the connection"))      # only database errors count
+
+
+# ---------------------------------------------------------------- T-14: size cap and counters
+def test_a_huge_body_is_refused_before_it_is_read(client, monkeypatch):
+    monkeypatch.setenv("MAX_BODY_BYTES", "100000")
+    big = {"messages": [{"role": "user", "content": "x" * 200_000}]}
+    r = client.post("/v1/chat/completions", json=big, headers=GOOD)
+    assert r.status_code == 413 and "too big" in r.json()["detail"]
+
+
+def test_a_body_without_a_declared_size_is_cut_off_at_the_cap(client, monkeypatch):
+    monkeypatch.setenv("MAX_BODY_BYTES", "50000")
+
+    def chunks():
+        yield b'{"messages":[{"role":"user","content":"'
+        for _ in range(20):
+            yield b"y" * 10_000
+        yield b'"}]}'
+
+    r = client.post("/v1/chat/completions", content=chunks(), headers={**GOOD, "content-type": "application/json"})
+    assert r.status_code == 413
+
+
+def test_normal_requests_are_not_affected_by_the_cap(client):
+    assert client.post("/v1/chat/completions", json=BODY, headers=GOOD).status_code == 200
+
+
+def test_metrics_are_off_without_a_token_and_hold_numbers_only_with_one(client, monkeypatch):
+    monkeypatch.delenv("METRICS_TOKEN", raising=False)
+    assert client.get("/metrics").status_code == 404
+    monkeypatch.setenv("METRICS_TOKEN", "s3cret")
+    assert client.get("/metrics").status_code == 404                     # no header
+    assert client.get("/metrics", headers={"X-Metrics-Token": "wrong"}).status_code == 404
+    client.post("/v1/chat/completions", json=BODY, headers=GOOD)
+    client.post("/v1/chat/completions", json=BODY)                       # unsigned: 401
+    m = client.get("/metrics", headers={"X-Metrics-Token": "s3cret"}).json()
+    assert m["chat_started"] >= 2 and m["status"].get("200", 0) >= 1 and m["status"].get("401", 0) >= 1
+    assert m["chat_in_flight"] == 0 and m["chat_seconds"]["samples"] >= 1
+    assert "a@b.com" not in str(m) and "u1" not in str(m["events"]), "no user data in the counters"

@@ -109,7 +109,7 @@ class Config:
     # --- LLM ---
     provider: str = "openrouter"        # "openrouter" (default, cloud, free model) or "ollama" (local)
     openrouter_model: str = os.environ.get("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")   # fastest reliable free model (scripts/model_check.py)
-    openrouter_fallbacks: tuple = ("inclusionai/ling-3.0-flash-sante:free", "openrouter/free")   # OpenRouter allows max 3 models total
+    openrouter_fallbacks: tuple = ("nvidia/nemotron-3.5-lightning:free", "openrouter/free")   # OpenRouter allows max 3 models total
     vision_model: str = os.environ.get("CONSIZ_VISION_MODEL", "google/gemma-4-31b-it:free")   # reads window pictures
     vision_fallbacks: tuple = ("google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
     ollama_model: str = os.environ.get("CONSIZ_OLLAMA_MODEL", "gemma4:e4b")    # only used with --provider ollama

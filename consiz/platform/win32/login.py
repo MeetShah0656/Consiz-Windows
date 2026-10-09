@@ -26,7 +26,7 @@ class LoginUI:
 
     def _build(self) -> None:
         win = tk.Toplevel(_get_root())
-        win.title("Sign in to Conciz")
+        win.title("Sign in to Consiz")
         win.configure(bg=CREAM_100)
         area = dpi.work_area_at(0, 0)
         win.geometry(f"{WIDTH}x{HEIGHT}+{area[0] + max(0, (area[2] - area[0] - WIDTH) // 2)}+"
@@ -41,7 +41,7 @@ class LoginUI:
 
         tk.Label(body, text="Sign in", font=(FONT_DISPLAY, 20, "bold"), fg=MAROON_900, bg=CREAM_100,
                  anchor="w").pack(anchor="w")
-        tk.Label(body, text="Sign in once to start using Conciz.", font=(FONT_TEXT, 10), fg=INK_MUTED,
+        tk.Label(body, text="Sign in once to start using Consiz.", font=(FONT_TEXT, 10), fg=INK_MUTED,
                  bg=CREAM_100, anchor="w").pack(anchor="w", pady=(2, 16))
 
         self.google_btn = tk.Button(

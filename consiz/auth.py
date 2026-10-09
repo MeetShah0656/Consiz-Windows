@@ -243,7 +243,7 @@ def sign_in_google(open_browser=None) -> dict:
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"<html><body style='font-family:Segoe UI;text-align:center;margin-top:20vh;"
-                             b"background:#F8F1E3;color:#43151B'><h2>Signed in to Conciz</h2>"
+                             b"background:#F8F1E3;color:#43151B'><h2>Signed in to Consiz</h2>"
                              b"<p>You can close this tab.</p></body></html>")
 
         def log_message(self, *a):

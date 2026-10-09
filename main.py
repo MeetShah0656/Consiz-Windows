@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""As Conciz — Phase 1 terminal MVP.
+"""Consiz — Phase 1 terminal MVP.
 
 Run:   python3 main.py                 # listen for middle-click / hotkey, print results here
        python3 main.py --text "..."    # run the pipeline on given text (no listener)
@@ -275,7 +275,7 @@ def main() -> int:
         from consiz.platform.win32 import dpi
         dpi.enable()                                  # sharp text on 125 % / 150 % screens; before any window exists (T-06)
         logs.get().info("screen scale %.2f", dpi.scale())
-    ap = argparse.ArgumentParser(description="As Conciz terminal MVP")
+    ap = argparse.ArgumentParser(description="Consiz terminal MVP")
     ap.add_argument("--text", help="process this text instead of listening")
     ap.add_argument("--path", help="process this file/folder instead of listening")
     ap.add_argument("--capture", action="store_true", help="capture current selection once, process, exit")
@@ -375,7 +375,7 @@ def main() -> int:
     )
     trig.start()
     where = "in the terminal" if args.terminal else "in a popup next to your selection"
-    print(output._c("1", "As Conciz") + " — select anything, then press "
+    print(output._c("1", "Consiz") + " — select anything, then press "
           + output._c("1", "middle mouse") + f" (or {CONFIG.hotkey}) to explain. "
           + f"Result appears {where}. Ctrl+C to quit.", flush=True)
     global POPUP

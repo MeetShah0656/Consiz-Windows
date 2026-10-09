@@ -1,4 +1,4 @@
-﻿"""App-side behaviour when talking to the Conciz backend: cold-start retry and sign-in expiry."""
+﻿"""App-side behaviour when talking to the Consiz backend: cold-start retry and sign-in expiry."""
 import pytest
 
 from consiz import llm

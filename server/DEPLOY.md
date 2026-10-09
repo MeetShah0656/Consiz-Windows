@@ -1,4 +1,4 @@
-# Deploy the Conciz server on Render (free)
+# Deploy the Consiz server on Render (free)
 
 ## One-time setup
 - Push this repo to GitHub (the `.env` file is git-ignored, so no secrets go up).
