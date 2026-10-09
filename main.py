@@ -29,7 +29,9 @@ def acquire_single_instance_lock() -> bool:
     if sys.platform == "win32":
         import ctypes
         ERROR_ALREADY_EXISTS = 183
-        _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ConsizSingleInstanceMutex")
+        # CONSIZ_INSTANCE_SUFFIX lets scripts/smoke_ui.py run a throw-away copy next to the real one without touching it.
+        name = "Local\\ConsizSingleInstanceMutex" + os.environ.get("CONSIZ_INSTANCE_SUFFIX", "")
+        _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, name)
         if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
             return False
         return True

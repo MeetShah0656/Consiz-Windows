@@ -42,35 +42,13 @@ def check_tests() -> None:
 
 
 # ------------------------------------------------------------------ 2. secrets
-SECRET_PATTERNS = {
-    "OpenRouter key": re.compile(r"sk-or-v1-[A-Za-z0-9]{24,}"),
-    "Google client secret": re.compile(r"GOCSPX-[A-Za-z0-9_\-]{20,}"),
-    "Google API key": re.compile(r"AIza[0-9A-Za-z_\-]{35}"),
-    "GitHub token": re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
-    "Private key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    "Neon/Postgres URL with password": re.compile(r"postgres(?:ql)?://[^\s:@/]+:[^\s@/]{6,}@"),
-}
-
-
 def check_secrets() -> None:
-    files = run(["git", "ls-files"]).stdout.splitlines()
-    bad_files = [f for f in files if Path(f).name in (".env", ".env.txt") or f.endswith(".pem")]
-    hits: list[str] = []
-    for f in files:
-        path = Path(f)
-        if path.suffix.lower() in (".png", ".ico", ".jpg", ".exe", ".dll", ".pyc", ".webp") or not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for label, pat in SECRET_PATTERNS.items():
-            if pat.search(text) and not f.startswith(("tests/", "scripts/release_check.py")):
-                hits.append(f"{f}: {label}")
-    if bad_files or hits:
-        record("FAIL", "no secrets in git", "; ".join(bad_files + hits)[:300])
+    from secret_scan import scan                     # scripts/secret_scan.py (this folder is on sys.path when run as a script)
+    problems, n = scan(ROOT)
+    if problems:
+        record("FAIL", "no secrets in git", "; ".join(problems)[:300])
     else:
-        record("PASS", "no secrets in git", f"{len(files)} tracked files scanned; .env/.env.txt not tracked")
+        record("PASS", "no secrets in git", f"{n} tracked files scanned; .env/.env.txt not tracked")
 
 
 # ------------------------------------------------------------------ 3. checkpoints + docs
@@ -127,14 +105,11 @@ def check_exe(skip_build: bool) -> None:
     if (ROOT / "consiz" / "_build_config.py").exists():
         record("FAIL", "baked config removed from source tree", "consiz/_build_config.py still exists")
 
-    subprocess.run(["taskkill", "/F", "/IM", "Consiz.exe"], capture_output=True)
-    time.sleep(1)
-    proc = subprocess.Popen([str(exe)])
-    time.sleep(9)
-    alive = proc.poll() is None
-    record("PASS" if alive else "FAIL", "exe starts and stays running", "alive after 9 s" if alive else
-           f"exited with code {proc.poll()}")
-    subprocess.run(["taskkill", "/F", "/IM", "Consiz.exe"], capture_output=True)
+    # An isolated copy (own settings folder, own lock), stopped by its process id: the Consiz you are using is untouched.
+    p = run([sys.executable, str(ROOT / "scripts" / "smoke_ui.py"), "--exe", str(exe)], timeout=300)
+    lines = [ln for ln in p.stdout.splitlines() if ln.startswith("[")]
+    record("PASS" if p.returncode == 0 else "FAIL", "exe smoke test (scripts/smoke_ui.py)",
+           f"{len(lines)} checks; " + ("all passed" if p.returncode == 0 else next((ln for ln in lines if ln.startswith("[FAIL")), p.stdout[-160:])))
 
 
 # ------------------------------------------------------------------ 5. the live server
