@@ -196,6 +196,16 @@ def _confirm_change(title: str, text: str) -> bool:
     return ctypes.windll.user32.MessageBoxW(None, text, title, 0x40134) == 6      # YESNO | WARNING | default No | topmost
 
 
+def _reopen_saved_chat(chat_id: str) -> None:
+    """Tray > Recent chats: show a saved chat again (T-13)."""
+    from consiz import history
+    record = history.load(chat_id)
+    if record is None or POPUP is None:
+        output.notify(f"saved chat {chat_id} could not be opened")
+        return
+    POPUP.reopen_chat(record)
+
+
 _VOICE_CANCEL = threading.Event()
 
 
@@ -542,6 +552,7 @@ def main() -> int:
                 is_signed_in=_auth.signed_in if auth_on else None,
                 on_sign_in=(lambda: _dispatch_login()) if auth_on else None,
                 welcome="Select any text, then press the middle mouse button.",
+                on_open_chat=_reopen_saved_chat,
             )
             tray.start()
             from consiz import hotkeys as _hotkeys, watcher as _watcher

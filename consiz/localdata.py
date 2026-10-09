@@ -1,7 +1,7 @@
 """Everything Consiz keeps on this PC, and a way to wipe it (Settings > Account & data > Clear local data).
 
 Removed: preferences (incl. the welcome-screen flag and PC-mode permission), the saved sign-in (Credential Manager
-refresh token + session file) and the app log. NOT removed: profile.md, which the user wrote themselves.
+refresh token + session file), saved chats and the app log. NOT removed: profile.md, which the user wrote themselves.
 """
 from __future__ import annotations
 
@@ -22,6 +22,13 @@ def clear_local_data() -> list[str]:
         if auth.enabled() and auth.signed_in():
             auth.sign_out()
             done.append("signed out and removed the saved sign-in")
+    except Exception:
+        pass
+    try:
+        from . import history
+        n = history.delete_all()
+        if n:
+            done.append(f"removed {n} saved chats")
     except Exception:
         pass
     for path in local_files():

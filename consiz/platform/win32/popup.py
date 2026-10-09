@@ -8,13 +8,14 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import queue
+import subprocess
 import threading
 import time
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import Callable
 
-from consiz import prefs, voice
+from consiz import history, prefs, voice
 from consiz.config import CONFIG
 from consiz import dictation as _dictation
 from consiz.dictation import AudioRecorder
@@ -177,6 +178,8 @@ class PopupUI:
         self.window: tk.Toplevel | None = None
         self._lines: list[str] = []
         self.user_size: tuple[int, int] | None = _load_size()     # remembered from the last resize (KI-13)
+        self._chat_id: str | None = None       # the saved-chat file this conversation is written to (T-13), once it has one
+        self._chat_started = 0.0
         self._resize: tuple | None = None      # a drag in progress: (edges, mouse x, mouse y, window box at the start)
         self._edge_cursor = ""
         self._start_x = 0
@@ -333,6 +336,12 @@ class PopupUI:
         copy_btn = tk.Label(footer, text="Copy all", font=(FONT_TEXT, 8, "bold"), fg=MAROON_800, bg=bg_color,
                             cursor="hand2")
         copy_btn.pack(side="left")
+        save_btn = tk.Label(footer, text="Save as text", font=(FONT_TEXT, 8, "bold"), fg=MAROON_800, bg=bg_color,
+                            cursor="hand2")
+        save_btn.pack(side="left", padx=(14, 0))
+        save_btn.bind("<Button-1>", lambda e: self._export_text())
+        save_btn.bind("<Enter>", lambda e: save_btn.config(fg=MAROON_600))
+        save_btn.bind("<Leave>", lambda e: save_btn.config(fg=MAROON_800))
 
         def on_copy(e):
             root.clipboard_clear()
@@ -553,7 +562,65 @@ class PopupUI:
         """Queue fn for the UI thread, unless the request was stopped by then."""
         _dispatch(self._if_live, tok, fn, args)
 
+    def _save_history(self) -> None:
+        """Write this conversation to its file when the person chose to keep chats (T-13). Cheap and never raises."""
+        try:
+            if not history.enabled() or not self._transcript:
+                return
+            if self._chat_id is None:
+                self._chat_id, self._chat_started = history.new_id(), time.time()
+            history.save(self._chat_id, self.mode, self.title_lbl.cget("text"), self.meta_lbl.cget("text"),
+                         list(self._transcript), self._chat_started)
+        except Exception:
+            pass
+
+    def _export_text(self) -> None:
+        """'Save as text': the chat on screen as a .txt in Documents\\Consiz chats, shown in Explorer."""
+        if not any(who == "Consiz" and text for who, text in self._transcript):
+            self._set_meta("Nothing to save yet")
+            return
+        try:
+            path = history.export_text(self._transcript, self.title_lbl.cget("text"), self.meta_lbl.cget("text"),
+                                       self._chat_started or time.time())
+        except OSError as e:
+            self._set_meta(f"Could not save ({type(e).__name__})")
+            return
+        self._set_meta(f"Saved: {path}")
+        try:
+            subprocess.Popen(["explorer", "/select," + str(path)])
+        except OSError:
+            pass
+
+    def reopen_chat(self, record: dict, at=None) -> None:
+        """Show a saved chat again and let the person carry on (any thread)."""
+        _dispatch(self._reopen, record, at or _get_cursor_pos())
+
+    def _reopen(self, record: dict, point) -> None:
+        pc = record.get("mode") == "pc"
+        self._show_at(point, "Earlier chat", record.get("title", ""))
+        self.mode = "pc" if pc else "selection"
+        self._set_placeholder()
+        self.context = "(an earlier chat, shown above)"
+        first = True
+        for m in record.get("messages", []):
+            text = str(m.get("text", ""))
+            if m.get("who") == "You":
+                self._add_user(text)
+                self.history.append({"role": "user", "content": text})
+                continue
+            self._begin_ai()
+            for line in text.splitlines():
+                self._append(line)
+            if first and not pc:
+                self.last_answer = text                      # the first answer; later turns are the follow-up history
+            else:
+                self.history.append({"role": "assistant", "content": text})
+            first = False
+        self._chat_id, self._chat_started = record.get("id"), record.get("started") or time.time()
+        self._set_meta(f"Saved chat · {len(record.get('messages', []))} messages")
+
     def _end_run(self, tok: CancelToken) -> None:
+        self._save_history()
         if tok is self._token:
             self._token = None
             self._set_chat_busy(False)
@@ -616,6 +683,8 @@ class PopupUI:
             self._is_dictating = False
             self._recorder.cancel()
             self._set_listening(False)
+        self._save_history()
+        self._chat_id = None
         self._clear_chat()
         self.history.clear()
         self.last_answer = ""
@@ -747,6 +816,7 @@ class PopupUI:
             self._restore()                               # a new answer always opens fully
 
         self._clear_chat()
+        self._chat_id = None
         self.history.clear()
         self._msg_texts.clear()
         self.title_lbl.config(text=title)
@@ -953,6 +1023,7 @@ class PopupUI:
     def hide(self) -> None:
         def _do_hide():
             self.cancel_request(say=False)                 # closing the window stops the answer (and the bill)
+            self._save_history()
             if self._is_dictating:
                 self._is_dictating = False
                 self._recorder.cancel()

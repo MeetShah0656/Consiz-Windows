@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 try:
@@ -19,7 +20,7 @@ except ImportError:
     Image = None
     ImageDraw = None
 
-from consiz import hotkeys, pause, updater, voice
+from consiz import history, hotkeys, pause, updater, voice
 from consiz.config import CONFIG
 
 RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -115,6 +116,25 @@ def get_icon_image() -> Image.Image:
     return _create_default_icon_image()
 
 
+def history_menu_items(on_open_chat: Optional[Callable[[str], None]]):
+    """The items of tray > Recent chats: the last saved chats (only when the person turned saving on in Settings); a
+    click shows that chat again (T-13)."""
+    def open_chat(chat_id):
+        return lambda icon, item: on_open_chat and threading.Thread(target=on_open_chat, args=(chat_id,), daemon=True).start()
+
+    if not history.enabled():
+        yield Item("Saving chats is off (Settings > General)", None, enabled=False)
+        return
+    chats = history.recent(10)
+    if not chats:
+        yield Item("No saved chats yet", None, enabled=False)
+    for c in chats:
+        when = time.strftime("%d %b %H:%M", time.localtime(c["updated"]))
+        yield Item(f"{c['title'][:44]}  ·  {when}".replace("&", "&&"), open_chat(c["id"]))
+    yield Menu.SEPARATOR
+    yield Item("Open the chats folder", lambda icon, item: os.startfile(str(history.folder())))
+
+
 class SystemTray:
     def __init__(
         self,
@@ -128,8 +148,10 @@ class SystemTray:
         is_signed_in: Optional[Callable[[], bool]] = None,
         on_sign_in: Optional[Callable[[], None]] = None,
         welcome: str = "",
+        on_open_chat: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.welcome = welcome
+        self.on_open_chat = on_open_chat
         self.on_sign_out = on_sign_out
         self.on_pc = on_pc
         self.get_user_label = get_user_label
@@ -287,6 +309,9 @@ class SystemTray:
                 )
             return Menu(*items)
 
+        def _make_history_menu():
+            return Menu(lambda: history_menu_items(self.on_open_chat))
+
         def _make_trigger_menu():
             """How Consiz is started with the mouse. The trigger re-reads this setting within ~3 seconds."""
             from consiz import prefs
@@ -319,6 +344,7 @@ class SystemTray:
             Menu.SEPARATOR,
             Item("🌐 Answer Language", _make_lang_menu()),
             Item("🖱 Trigger", _make_trigger_menu()),
+            *([Item("🗂 Recent chats", _make_history_menu())] if self.on_open_chat else []),
             Item("⚙️ Settings…", self._open_settings),
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
             Item(lambda item: f"⬆ Download Consiz {(updater.last() or {}).get('latest', '')}", self._open_update,

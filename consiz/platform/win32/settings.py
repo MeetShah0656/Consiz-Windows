@@ -12,7 +12,7 @@ from tkinter import messagebox, ttk
 from typing import Callable, Optional
 import webbrowser
 
-from consiz import hotkeys, pause, prefs, voice
+from consiz import history, hotkeys, pause, prefs, voice
 from consiz.config import CONFIG
 from consiz.platform.win32 import dpi
 from consiz.platform.win32.dpi import px
@@ -240,14 +240,6 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     _check(g, "Start Consiz when I sign in to Windows", auto_var,
            lambda: (tray.set_autostart_enabled(auto_var.get()), say("Saved ✓")))
 
-    _section(g, "PC watcher")
-    watch_var = tk.BooleanVar(value=bool(prefs.get("watcher_enabled", False)))
-    _check(g, "Tell me when my PC has been slow, full or short of disk space", watch_var,
-           lambda: (prefs.set("watcher_enabled", watch_var.get()), say("Saved ✓")))
-    _note(g, "Off until you turn it on. Every 30 seconds Consiz reads three numbers on this PC (CPU, memory, free disk). "
-             "Nothing is sent anywhere, no AI is used, nothing is stored and nothing is closed. It only shows one small "
-             "message when something stays high for a few minutes.")
-
     _section(g, "Where answers come from")
     server = llm.server_mode()
     src_var = tk.StringVar(value="ollama" if CONFIG.provider == "ollama" else "openrouter")
@@ -452,6 +444,15 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     _button(bl_row, "Save", save_blocklist, primary=True).pack(side="right")
 
     # =============================================================== Account & data
+
+    _section(p, "PC watcher")
+    watch_var = tk.BooleanVar(value=bool(prefs.get("watcher_enabled", False)))
+    _check(p, "Tell me when my PC has been slow, full or short of disk space", watch_var,
+           lambda: (prefs.set("watcher_enabled", watch_var.get()), say("Saved ✓")))
+    _note(p, "Off until you turn it on. Every 30 seconds Consiz reads three numbers on this PC (CPU, memory, free disk). "
+             "Nothing is sent anywhere, no AI is used, nothing is stored and nothing is closed. It only shows one small "
+             "message when something stays high for a few minutes.")
+
     a = new_tab("Account & data")
     _section(a, "Account")
     if auth.enabled():
@@ -511,6 +512,27 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
 
     _button(hrow, "Open log folder", open_logs).pack(side="left")
     _button(hrow, "Copy diagnostics", copy_diag).pack(side="left", padx=(px(8), 0))
+
+    _section(a, "Chat history")
+    hist_var = tk.BooleanVar(value=history.enabled())
+    _check(a, "Keep my chats on this PC so I can open them again", hist_var,
+           lambda: (prefs.set("history_enabled", hist_var.get()), say("Saved ✓")))
+    _note(a, "Off until you turn it on. Chats are saved only on this PC, never uploaded, with passwords and keys removed "
+             "first. Tray > Recent chats opens one again. Each chat can also be saved as a text file from its window "
+             "(Save as text), whether or not this is on.")
+    hist_row = tk.Frame(a, bg=CREAM_50)
+    hist_row.pack(fill="x", pady=(px(4), 0))
+    _button(hist_row, "Open the folder", lambda: os.startfile(str(history.folder()))).pack(side="left")
+
+    def delete_chats():
+        n = history.count()
+        if not n:
+            say("There are no saved chats.")
+            return
+        if messagebox.askyesno("Consiz", f"Delete all {n} saved chats from this PC? This cannot be undone.", parent=win):
+            say(f"Deleted {history.delete_all()} chats ✓")
+
+    _button(hist_row, "Delete all saved chats", delete_chats).pack(side="left", padx=(px(8), 0))
 
     _section(a, "Your data on this PC")
     _note(a, "Clears your settings, the saved sign-in and the app log from this computer. Your profile.md is kept. "
