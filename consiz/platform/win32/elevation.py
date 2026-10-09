@@ -26,7 +26,7 @@ advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c
                                          ctypes.POINTER(wintypes.DWORD)]
 
 ELEVATED_NOTE = ("{app} is running as administrator, so Consiz cannot read it. To use Consiz there, close Consiz and "
-                 "start it with a right-click on Consiz.exe > Run as administrator.")
+                 "start it with a right-click on Consiz.exe > Run as administrator.")      # shown through i18n.tf in capture
 
 
 def process_is_elevated(pid: int) -> bool | None:

@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Callable
 
+from .i18n import t, tf
+
 INTERVAL_S = 30
 CPU_PERCENT, CPU_TICKS = 85.0, 6              # 6 samples = 3 minutes
 RAM_PERCENT, RAM_TICKS = 92.0, 4              # 2 minutes
@@ -45,17 +47,22 @@ class Watcher:
         self._streak["cpu"] = self._streak["cpu"] + 1 if s.get("cpu", 0) >= CPU_PERCENT else 0
         self._streak["ram"] = self._streak["ram"] + 1 if s.get("ram", 0) >= RAM_PERCENT else 0
         if self._streak["cpu"] >= CPU_TICKS and self._due("cpu"):
-            self._say("cpu", "Your PC is slow", "It has been very busy for 3 minutes" + (f". Biggest: {top}" if top else "")
-                      + f". Press {self._hint()} and ask Consiz why.")
+            self._say("cpu", t("Your PC is slow"), tf("It has been very busy for 3 minutes. Biggest: {top}. Press {key} and ask Consiz why.",
+                                                         top=top, key=self._hint()) if top else
+                      tf("It has been very busy for 3 minutes. Press {key} and ask Consiz why.", key=self._hint()))
             shown.append("cpu")
         if self._streak["ram"] >= RAM_TICKS and self._due("ram"):
-            self._say("ram", "Memory is almost full", f"{s['ram']:.0f}% of memory has been in use for 2 minutes"
-                      + (f". Biggest: {top}" if top else "") + f". Press {self._hint()} to ask Consiz.")
+            self._say("ram", t("Memory is almost full"),
+                      tf("{percent}% of memory has been in use for 2 minutes. Biggest: {top}. Press {key} to ask Consiz.",
+                         percent=f"{s['ram']:.0f}", top=top, key=self._hint()) if top else
+                      tf("{percent}% of memory has been in use for 2 minutes. Press {key} to ask Consiz.",
+                         percent=f"{s['ram']:.0f}", key=self._hint()))
             shown.append("ram")
         free = s.get("disk_free_percent")
         if free is not None and free < DISK_FREE_PERCENT and self._due("disk"):
-            self._say("disk", "Your disk is almost full", f"Drive {s.get('disk_drive', 'C:')} has only "
-                      f"{s.get('disk_free_gb', '?')} GB free ({free:.0f}%). Press {self._hint()} to ask Consiz how to free space.")
+            self._say("disk", t("Your disk is almost full"),
+                      tf("Drive {drive} has only {gb} GB free ({percent}%). Press {key} to ask Consiz how to free space.",
+                         drive=s.get("disk_drive", "C:"), gb=s.get("disk_free_gb", "?"), percent=f"{free:.0f}", key=self._hint()))
             shown.append("disk")
         return shown
 

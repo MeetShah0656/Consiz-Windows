@@ -50,6 +50,7 @@ def test_text_size_comes_from_windows_and_is_kept_in_a_sensible_range(monkeypatc
 
 
 def test_text_size_makes_fixed_sizes_grow_with_the_fonts(monkeypatch):
+    dpi.enable()                                              # first, so monkeypatch puts back the REAL scale afterwards
     monkeypatch.delenv("CONSIZ_UI_SCALE", raising=False)
     monkeypatch.setitem(dpi._state, "scale", 1.25)
     monkeypatch.setattr(a11y, "_cache", {"text_scale": 1.0})

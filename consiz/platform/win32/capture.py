@@ -531,7 +531,8 @@ def _admin_note(app: str, hwnd: int) -> str:
     """Why nothing was found, when the real reason is that the window runs as administrator (T-16); else ''."""
     try:
         from .elevation import ELEVATED_NOTE, window_needs_admin
-        return ELEVATED_NOTE.format(app=app) if window_needs_admin(hwnd) else ""
+        from consiz.i18n import tf
+        return tf(ELEVATED_NOTE, app=app) if window_needs_admin(hwnd) else ""
     except Exception:
         return ""
 

@@ -11,7 +11,7 @@ Consiz is a silent desktop assistant. Two ways in, one chat window out:
 
 Both end in the same chat popup (follow-ups, per-message copy, minimize, new chat). The AI can *suggest* one-click buttons (open Storage settings…) but never acts by itself.
 
-**Non-goals (for now):** sending messages/emails for the user, killing processes, always-on screen recording, mobile global capture (impossible on iOS), self-hosted models for users.
+**Non-goals (for now):** sending messages/emails for the user, ending programs on its own (since WIN-041 it can *offer* "close this program" as a button, after a Yes box, never for Windows' own programs), always-on screen recording, mobile global capture (impossible on iOS), self-hosted models for users.
 
 ## 2. Principles (non-negotiable — extends the 7 rules in the architecture doc)
 
@@ -194,7 +194,15 @@ Failure behaviour: server unreachable → friendly retry text; 401 → sign in a
 | Server concurrency | async answer route (httpx), Google keys cached, DB wait-not-fail, idle-memory clean-up; `scripts/load_test.py` measures it with a fake AI (no cost) | `server/app.py`, `scripts/load_test.py` |
 | Responsive UI | the line being written is shown live and replaced by the final line (`live_preview`, throttled to ~16/s; KIND/READ/ACTION lines never shown); "thinking" line while waiting; every window sizes itself with `dpi.fit_size` for the screen it opens on, Settings tabs scroll only when needed, bubbles/notes re-wrap on resize, resizing is clamped to the screen | `platform/win32/popup.py`, `settings.py`, `dpi.py` |
 | Voice dictation | speech is turned into text ON THE PC (faster-whisper); mic button in the popup, Ctrl+Alt+D (selection = spoken instruction, nothing selected = spoken question about the PC), stops by itself after a pause; the speech model is NOT inside the app: one-time download with consent and size shown, progress and cancel; Settings: on/off, model size, shortcut; the audio is never uploaded or saved | `consiz/voice.py`, `consiz/dictation.py`, `popup.py`, `main.py` |
+| Pictures | a picture file or a clipboard screenshot is explained by an image-reading model, only after a Yes/No box every time (a picture cannot have secrets removed); shrunk on the PC first; follow-ups still see it | `consiz/pictures.py`, `router.py`, `main.py` |
+| Confirm-first PC actions | the AI may suggest "close this program", "clear old temp files", "stop a startup item"; each asks through a warning box naming exactly what happens; refused for Windows programs, security software, Consiz itself, other accounts; temp: only a folder named Temp, files over a day old, links never followed | `consiz/pc_actions.py`, `platform/win32/actions.py` |
+| PC watcher | opt-in (off by default); every 30 s three local numbers; one tray message after minutes of high CPU / full memory / low disk; nothing sent, no AI | `consiz/watcher.py` |
+| Saved chats | opt-in; local JSON files, secrets removed, newest 200; tray > Recent chats reopens; "Save as text" always available | `consiz/history.py` |
+| Accessibility | Tab order and Enter/Space on every button, focus ring, Windows Text size and high contrast followed, names for screen readers; limits of Tk written down | `platform/win32/a11y.py`, `docs/ACCESSIBILITY.md` |
+| Hindi | every label, button, title, tray item and consent box has a Hindi text; English is the key, a missing text shows English; chosen in Settings (Automatic follows Windows) | `consiz/i18n.py`, `consiz/strings_hi.py` |
+| Server hardening | database circuit-breaker (a dead database is asked once, then left alone 30 s; answers go on with memory limits; /health says degraded), request body capped at 5 MB before it is read, counters on `GET /metrics` (needs METRICS_TOKEN) | `server/app.py` |
+| Automatic checks | `scripts/smoke_ui.py` starts the packaged exe in an isolated sandbox; `scripts/secret_scan.py`; GitHub Actions run the tests and the scan | `scripts/`, `.github/workflows/ci.yml` |
 | Installer | Inno Setup script (per-user, no admin, same autostart key as the tray) + build script. **Never built yet; unsigned** | `installer/consiz.iss`, `scripts/build_installer.py` |
 
-Still open from §13: macOS port of PC mode/chat, Android/iOS clients, plans + billing, background watcher and confirm-first actions (T-12: conflicts with the non-goal "killing processes" above, so it needs a product decision), teammate verification, installer build + signing, compatibility matrix (WIN-010), Render in Singapore.
+Still open from §13: macOS port of PC mode/chat, Android/iOS clients, plans + billing, teammate verification, installer build + signing, compatibility matrix (WIN-010), Render in Singapore.
 

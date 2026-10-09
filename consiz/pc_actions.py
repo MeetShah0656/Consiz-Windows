@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from . import i18n
+
 # name -> {arg -> (button label, target)}.  Targets are launched by the platform layer.
 SETTINGS = {
     "storage": ("Open Storage settings", "ms-settings:storagesense"),
@@ -65,23 +67,23 @@ def parse(line: str, windows: list[dict], startup: list[str] | None = None) -> A
     name, arg = parts[0].lower(), (parts[1].lower() if len(parts) > 1 else "")
     if name == "open_settings" and arg in SETTINGS:
         label, target = SETTINGS[arg]
-        return Action("launch", target, label)
+        return Action("launch", target, i18n.t(label))
     if name in SIMPLE and not arg:
         label, target = SIMPLE[name]
-        return Action("launch", target, label)
+        return Action("launch", target, i18n.t(label))
     if name == "focus_window" and arg.isdigit() and 1 <= int(arg) <= len(windows):
         w = windows[int(arg) - 1]
-        return Action("focus", str(w["hwnd"]), f"Switch to: {w['title'][:40]}")
+        return Action("focus", str(w["hwnd"]), i18n.tf("Switch to: {title}", title=w["title"][:40]))
     if name == "end_program" and arg.isdigit() and 1 <= int(arg) <= len(windows):
         w = windows[int(arg) - 1]
-        return Action("end_program", str(w["hwnd"]), f"Close {w['app']}: {w['title'][:34]}")
+        return Action("end_program", str(w["hwnd"]), i18n.tf("Close {app}: {title}", app=w["app"], title=w["title"][:34]))
     if name == "clear_temp" and not arg:
-        return Action("clear_temp", "", "Clear old temporary files")
+        return Action("clear_temp", "", i18n.t("Clear old temporary files"))
     if name == "disable_startup" and startup:
         number = arg.lstrip("s")
         if number.isdigit() and 1 <= int(number) <= len(startup):
             item = startup[int(number) - 1]
-            return Action("disable_startup", item, f"Stop {item[:36]} starting with Windows")
+            return Action("disable_startup", item, i18n.tf("Stop {item} starting with Windows", item=item[:36]))
     return None
 
 
@@ -94,14 +96,14 @@ def run(action: Action, confirm: Confirm | None = None) -> tuple[bool, str]:
     unless `confirm` is given: it is called with a title and a plain description and must return True for Yes."""
     import sys
     if sys.platform != "win32":
-        return False, "Actions are Windows-only for now."
+        return False, i18n.t("Actions are Windows-only for now.")
     from consiz.platform.win32 import actions
     try:
         if action.kind == "focus":
             return actions.focus(int(action.target))
         if needs_confirm(action):
             if confirm is None:
-                return False, "This needs your confirmation first."
+                return False, i18n.t("This needs your confirmation first.")
             if action.kind == "end_program":
                 return actions.end_program(int(action.target), confirm)
             if action.kind == "clear_temp":

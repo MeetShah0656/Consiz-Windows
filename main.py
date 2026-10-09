@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 
-from consiz import llm, output
+from consiz import i18n, llm, output
 from consiz.config import CONFIG
 from consiz.dictation import AudioRecorder, get_dictation_engine
 from consiz.models import CapturedContext, CaptureMethod
@@ -155,10 +155,10 @@ def _confirm_picture(label: str) -> bool:
     if sys.platform != "win32":
         return False
     import ctypes
-    msg = ("Consiz can explain this picture with the AI:" + chr(10) + chr(10) + "  " + label[:90] + chr(10) + chr(10)
-           + "The picture itself is sent (shrunk), and passwords or other private details in a picture cannot be removed "
-           "first. Nothing is stored." + chr(10) + chr(10) + "Send it?")
-    return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - explain a picture", 0x124) == 6      # Yes/No, No is the default
+    msg = i18n.tf("Consiz can explain this picture with the AI:\n\n  {label}\n\nThe picture itself is sent (shrunk), and "
+                  "passwords or other private details in a picture cannot be removed first. Nothing is stored.\n\n"
+                  "Send it?", label=label[:90])
+    return ctypes.windll.user32.MessageBoxW(None, msg, i18n.t("Consiz - explain a picture"), 0x124) == 6      # Yes/No, No is the default
 
 
 import consiz.router as _router                    # noqa: E402 - the router asks this box before it sends a picture file
@@ -180,7 +180,8 @@ def _picture_on_clipboard(ctx):
     fingerprint = (img.size, hashlib.md5(img.tobytes()).hexdigest())
     if fingerprint == _DECLINED_PICTURE[0]:
         return None
-    if not _confirm_picture("the picture on your clipboard (for example a screenshot), " + f"{img.size[0]}x{img.size[1]}"):
+    if not _confirm_picture(i18n.tf("the picture on your clipboard (for example a screenshot), {size}",
+                                    size=f"{img.size[0]}x{img.size[1]}")):
         _DECLINED_PICTURE[0] = fingerprint
         return None
     from consiz import router
@@ -213,7 +214,7 @@ def _notice(text: str) -> None:
     """A plain message box (voice problems can happen before any Consiz window is open)."""
     if sys.platform == "win32":
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, text, "Consiz - Voice dictation", 0x40)
+        ctypes.windll.user32.MessageBoxW(None, text, i18n.t("Consiz - Voice dictation"), 0x40)
     else:
         output.notify(text)
 
@@ -223,11 +224,10 @@ def _voice_consent(model: str, mb: int) -> bool:
     if sys.platform != "win32":
         return True
     import ctypes
-    nl = chr(10)
-    msg = (f"Voice dictation needs a one-time download of the speech model (about {mb} MB) from Hugging Face." + nl + nl
-           + "It is kept on this PC. Your voice is turned into text on this PC and the audio is never uploaded; "
-           "only the words you say are sent to the AI, like a typed question." + nl + nl + "Download it now?")
-    return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - Voice dictation", 0x24) == 6   # YES/NO + question icon
+    msg = i18n.tf("Voice dictation needs a one-time download of the speech model (about {mb} MB) from Hugging Face.\n\n"
+                  "It is kept on this PC. Your voice is turned into text on this PC and the audio is never uploaded; "
+                  "only the words you say are sent to the AI, like a typed question.\n\nDownload it now?", mb=mb)
+    return ctypes.windll.user32.MessageBoxW(None, msg, i18n.t("Consiz - Voice dictation"), 0x24) == 6   # YES/NO + question icon
 
 
 def _voice_ready() -> bool:
@@ -269,7 +269,7 @@ def on_dictate_trigger(source: str) -> None:
     if ctx.is_empty:
         if not _pc_mode_consent():
             return
-        POPUP.open_pc_chat(note="Nothing was selected, so speak a question about this PC.")
+        POPUP.open_pc_chat(note="Nothing was selected, so speak a question about this PC.")      # translated when shown
         _dispatch(POPUP.begin_voice_question)
     else:
         POPUP.start_dictation_flow(ctx)
@@ -283,12 +283,11 @@ def _pc_mode_consent() -> bool:
     if sys.platform != "win32":
         return True
     import ctypes
-    msg = ("Ask about my PC will look at, on this computer:" + chr(10) + "  - names of running programs and how much "
-           "memory/CPU they use" + chr(10) + "  - titles of open windows (not what is inside them)" + chr(10)
-           + "  - disk space, battery, startup programs" + chr(10) + chr(10)
-           + "When you ask a question, this summary (with passwords/keys removed) is sent to the AI to answer you. "
-           "Nothing is changed on your PC." + chr(10) + chr(10) + "Allow this?")
-    if ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - Ask about my PC", 0x24) != 6:   # YES/NO + question icon
+    msg = i18n.t("Ask about my PC will look at, on this computer:\n  - names of running programs and how much memory/CPU "
+                 "they use\n  - titles of open windows (not what is inside them)\n  - disk space, battery, startup "
+                 "programs\n\nWhen you ask a question, this summary (with passwords/keys removed) is sent to the AI to "
+                 "answer you. Nothing is changed on your PC.\n\nAllow this?")
+    if ctypes.windll.user32.MessageBoxW(None, msg, i18n.t("Consiz - Ask about my PC"), 0x24) != 6:   # YES/NO + question icon
         return False
     prefs.set("pc_mode_consent", True)
     return True
@@ -307,13 +306,12 @@ def _capture_window_image(hwnd: int):
 def _confirm_window_read(titles: list[str]) -> bool:
     """Layer 3 permission: name the exact windows before any text inside them is read or sent."""
     import ctypes
-    nl = chr(10)
-    msg = ("Consiz wants to read the text inside:" + nl + nl + nl.join("  - " + t[:90] for t in titles) + nl + nl
-           + "This text (passwords and keys removed) is sent to the AI to answer your question. "
-           "If an app (like a browser) does not share its text, a PICTURE of that window is sent instead "
-           "- a picture cannot have secrets removed, so say No if anything private is on that window."
-           + nl + nl + "Nothing is changed or sent anywhere else. Allow for this session?")
-    return ctypes.windll.user32.MessageBoxW(None, msg, "Consiz - read window text", 0x24) == 6
+    msg = i18n.tf("Consiz wants to read the text inside:\n\n{titles}\n\nThis text (passwords and keys removed) is sent to "
+                  "the AI to answer your question. If an app (like a browser) does not share its text, a PICTURE of that "
+                  "window is sent instead - a picture cannot have secrets removed, so say No if anything private is on "
+                  "that window.\n\nNothing is changed or sent anywhere else. Allow for this session?",
+                  titles="\n".join("  - " + title[:90] for title in titles))
+    return ctypes.windll.user32.MessageBoxW(None, msg, i18n.t("Consiz - read window text"), 0x24) == 6
 
 
 def on_pc_trigger(source: str, note: str = "") -> bool:
@@ -417,7 +415,7 @@ def main() -> int:
         return 0
 
     if not acquire_single_instance_lock():
-        output.notify("Consiz is already running in another window/process. Only one instance can listen for triggers.")
+        output.notify(i18n.t("Consiz is already running in another window/process. Only one instance can listen for triggers."))
         if sys.platform == "win32":   # the exe has no console: without this the click would look dead
             import ctypes
             ctypes.windll.user32.MessageBoxW(

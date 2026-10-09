@@ -14,6 +14,7 @@ import threading
 from typing import Callable, Optional
 
 from . import prefs
+from .i18n import t, tf
 from .config import CONFIG
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")      # Windows without developer mode: harmless, just noisy
@@ -103,8 +104,8 @@ def download_model(name: Optional[str] = None, on_progress: Optional[Callable[[i
     except DownloadCancelled:
         raise
     except Exception as e:
-        raise VoiceError("Could not download the voice model. Check your internet connection and try again. "
-                         f"({type(e).__name__})") from e
+        raise VoiceError(tf("Could not download the voice model. Check your internet connection and try again. ({error})",
+                            error=type(e).__name__)) from e
 
 
 def prepare(consent: Callable[[str, int], bool], progress: Callable[[str], None],
@@ -116,9 +117,9 @@ def prepare(consent: Callable[[str, int], bool], progress: Callable[[str], None]
       - model missing                          -> ask ONCE with the size; No -> (False, ""); Yes -> download with progress
     """
     if not available():
-        return False, "Voice dictation is not included in this version of Consiz."
+        return False, t("Voice dictation is not included in this version of Consiz.")
     if not prefs.get("voice_enabled", True):
-        return False, "Voice dictation is switched off in Settings."
+        return False, t("Voice dictation is switched off in Settings.")
     from .dictation import get_dictation_engine
     if model_cached():
         get_dictation_engine().warmup()                     # load the model while the person is still speaking
@@ -127,18 +128,19 @@ def prepare(consent: Callable[[str, int], bool], progress: Callable[[str], None]
     if not consent(name, model_mb(name)):
         return False, ""
     try:
-        progress(f"Downloading the voice model (about {model_mb(name)} MB, one time)…")
+        progress(tf("Downloading the voice model (about {mb} MB, one time)…", mb=model_mb(name)))
         last = [-1]
 
         def on_progress(done: int, total: int) -> None:
             pct = int(100 * done / max(total, 1))
             if pct != last[0] and pct % 2 == 0:
                 last[0] = pct
-                progress(f"Downloading the voice model… {pct}%  ({done // 1_048_576} of {total // 1_048_576} MB)")
+                progress(tf("Downloading the voice model… {pct}%  ({done} of {total} MB)", pct=pct,
+                            done=done // 1_048_576, total=total // 1_048_576))
 
         download_model(name, on_progress, cancel)
     except DownloadCancelled:
-        return False, "Voice model download cancelled. It will ask again next time."
+        return False, t("Voice model download cancelled. It will ask again next time.")
     except VoiceError as e:
         return False, str(e)
     get_dictation_engine().warmup()

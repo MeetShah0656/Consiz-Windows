@@ -12,6 +12,8 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
+from consiz.i18n import t, tf
+
 user32 = ctypes.windll.user32
 SW_RESTORE = 9
 WM_CLOSE = 0x0010
@@ -23,17 +25,17 @@ def launch(target: str) -> tuple[bool, str]:
     if target == "downloads":
         target = str(Path.home() / "Downloads")
     os.startfile(target)                                       # noqa: S606 - target is whitelisted, never user/model text
-    return True, "Opened."
+    return True, t("Opened.")
 
 
 def focus(hwnd: int) -> tuple[bool, str]:
     """Bring an existing window to the front (restores it if minimized)."""
     if not user32.IsWindow(hwnd):
-        return False, "That window is closed now."
+        return False, t("That window is closed now.")
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, SW_RESTORE)
     user32.SetForegroundWindow(hwnd)
-    return True, "Switched."
+    return True, t("Switched.")
 
 
 # ====================================================================== CHANGE actions (always confirm first)
@@ -111,26 +113,26 @@ def _end_process(proc, title: str, confirm, wait_s: float = 8.0) -> tuple[bool, 
     import psutil
     why = protected_reason(proc)
     if why:
-        return False, f"Consiz will not close this: {why}."
+        return False, tf("Consiz will not close this: {why}.", why=t(why))
     name = proc.name()
-    asked = confirm("Consiz - close a program",
-                    f"Close this program?{NL}{NL}  {name}{NL}  Window: {title[:80]}{NL}{NL}"
-                    "Consiz asks it to close first, like pressing its X. If it asks you to save, answer there.")
+    asked = confirm(t("Consiz - close a program"),
+                    tf("Close this program?\n\n  {name}\n  Window: {title}\n\nConsiz asks it to close first, like "
+                       "pressing its X. If it asks you to save, answer there.", name=name, title=title[:80]))
     if not asked:
-        return False, "Cancelled. Nothing was changed."
+        return False, t("Cancelled. Nothing was changed.")
     for hwnd in _windows_of(proc.pid):
         user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
     try:
         proc.wait(timeout=wait_s)
-        return True, "Closed."
+        return True, t("Closed.")
     except psutil.TimeoutExpired:
         pass
     except psutil.NoSuchProcess:
-        return True, "Closed."
-    if not confirm("Consiz - force it to stop?",
-                   f"{name} did not close by itself (it may be stuck, or waiting for you to save).{NL}{NL}"
-                   "Force it to stop? Anything unsaved in it is lost."):
-        return False, "Left running: it did not close by itself."
+        return True, t("Closed.")
+    if not confirm(t("Consiz - force it to stop?"),
+                   tf("{name} did not close by itself (it may be stuck, or waiting for you to save).\n\n"
+                      "Force it to stop? Anything unsaved in it is lost.", name=name)):
+        return False, t("Left running: it did not close by itself.")
     try:
         proc.terminate()
         proc.wait(timeout=5)
@@ -140,7 +142,7 @@ def _end_process(proc, title: str, confirm, wait_s: float = 8.0) -> tuple[bool, 
         pass
     except psutil.AccessDenied:
         return False, "Windows would not allow Consiz to stop it."
-    return True, "Stopped."
+    return True, t("Stopped.")
 
 
 # ---- clear old temporary files
@@ -206,16 +208,16 @@ def clear_temp(confirm, root: str | None = None, now: float | None = None) -> tu
     """Delete the files in the user's Temp folder that are more than a day old, after a Yes that says how many and how big."""
     root = root or temp_root()
     if not _is_a_temp_folder(root):
-        return False, "Consiz will only clear a folder named Temp."
+        return False, t("Consiz will only clear a folder named Temp.")
     files, total = old_temp_files(root, now)
     if not files:
-        return True, "Nothing to clear: no temporary file is more than a day old."
-    if not confirm("Consiz - clear temporary files",
-                   f"Delete {len(files):,} temporary files ({_size_text(total)}) that are more than a day old?{NL}{NL}"
-                   f"  Folder: {root}{NL}{NL}"
-                   "These are leftovers that programs wrote and no longer need. Files that are in use are skipped. "
-                   "They are deleted for good (not moved to the Recycle Bin)."):
-        return False, "Cancelled. Nothing was changed."
+        return True, t("Nothing to clear: no temporary file is more than a day old.")
+    if not confirm(t("Consiz - clear temporary files"),
+                   tf("Delete {count} temporary files ({size}) that are more than a day old?\n\n  Folder: {root}\n\n"
+                      "These are leftovers that programs wrote and no longer need. Files that are in use are skipped. "
+                      "They are deleted for good (not moved to the Recycle Bin).",
+                      count=f"{len(files):,}", size=_size_text(total), root=root)):
+        return False, t("Cancelled. Nothing was changed.")
     deleted = freed = 0
     for path, size in files:
         try:
@@ -230,7 +232,7 @@ def clear_temp(confirm, root: str | None = None, now: float | None = None) -> tu
                 os.rmdir(folder)
             except OSError:
                 pass
-    return True, f"Deleted {deleted:,} files and freed {_size_text(freed)}."
+    return True, tf("Deleted {n} files and freed {size}.", n=f"{deleted:,}", size=_size_text(freed))
 
 
 # ---- stop a program starting with Windows
@@ -248,15 +250,14 @@ def disable_startup(name: str, confirm, run_key: str = RUN_KEY, approved_key: st
             winreg.QueryValueEx(k, name)
     except OSError:
         launch("ms-settings:startupapps")
-        return True, ("That one is set for all users of this PC, so Windows asks for permission to change it. "
-                      "I opened Startup apps for you.")
-    if not confirm("Consiz - startup program",
-                   f"Stop {name} from starting with Windows?{NL}{NL}"
-                   "The program is not removed and nothing is deleted. You can turn it back on any time in "
-                   "Settings > Apps > Startup."):
-        return False, "Cancelled. Nothing was changed."
+        return True, t("That one is set for all users of this PC, so Windows asks for permission to change it. "
+                       "I opened Startup apps for you.")
+    if not confirm(t("Consiz - startup program"),
+                   tf("Stop {name} from starting with Windows?\n\nThe program is not removed and nothing is deleted. "
+                      "You can turn it back on any time in Settings > Apps > Startup.", name=name)):
+        return False, t("Cancelled. Nothing was changed.")
     filetime = int((time.time() + 11644473600) * 10_000_000)
     flag = bytes([3, 0, 0, 0]) + struct.pack("<Q", filetime)    # what Task Manager writes when you press Disable
     with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, approved_key, 0, winreg.KEY_SET_VALUE) as k:
         winreg.SetValueEx(k, name, 0, winreg.REG_BINARY, flag)
-    return True, "Turned off. It will not start with Windows next time."
+    return True, t("Turned off. It will not start with Windows next time.")

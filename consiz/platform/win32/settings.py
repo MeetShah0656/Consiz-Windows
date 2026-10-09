@@ -12,7 +12,7 @@ from tkinter import messagebox, ttk
 from typing import Callable, Optional
 import webbrowser
 
-from consiz import history, hotkeys, pause, prefs, voice
+from consiz import history, hotkeys, i18n, pause, prefs, voice
 from consiz.config import CONFIG
 from consiz.platform.win32 import a11y, dpi
 from consiz.platform.win32.dpi import px
@@ -133,7 +133,7 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     # Open on the screen the mouse is on, never bigger than it (a 1366x768 laptop at 125 % has only ~580 px of height);
     # the tabs scroll when there is not enough room, and the window can be resized.
     area = dpi.work_area_at(win.winfo_pointerx(), win.winfo_pointery())
-    width, height = dpi.fit_size((px(620), px(740)), area, fraction=0.9)    # 0.9: leaves room for the title bar
+    width, height = dpi.fit_size((px(620), px(830)), area, fraction=0.9)    # 0.9: leaves room for the title bar
     win.geometry(f"{width}x{height}+{area[0] + max(0, (area[2] - area[0] - width) // 2)}+"
                  f"{area[1] + max(0, (area[3] - area[1] - height) // 3)}")
     win.minsize(min(px(460), width), min(px(340), height))
@@ -163,8 +163,9 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     _button(foot, "Close", _closed).pack(side="right")
 
     def say(text: str, ok: bool = True) -> None:
-        status.config(text=text, fg=SUCCESS if ok else WARNING)
-        win.after(3500, lambda: status.config(text="") if status.cget("text") == text else None)
+        shown = i18n.t(text)
+        status.config(text=shown, fg=SUCCESS if ok else WARNING)
+        win.after(3500, lambda: status.config(text="") if status.cget("text") == shown else None)
 
     # ---- tabs
     style = ttk.Style()
@@ -215,16 +216,17 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
         outer.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", wheel))
         outer.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
         canvas.pack(side="left", fill="both", expand=True)
-        book.add(outer, text=title)
+        book.add(outer, text=i18n.t(title))
         return content
 
     # =============================================================== General
     g = new_tab("General")
     _section(g, "Answer language")
-    names = [f"{lbl} ({name})" if code != "auto" else "Auto (matches the selected text)" for code, lbl, name, _ in LANGUAGES]
+    names = [f"{lbl} ({name})" if code != "auto" else i18n.t("Auto (matches the selected text)") for code, lbl, name, _ in LANGUAGES]
     lang_var = tk.StringVar(value=names[CODES.index(CONFIG.answer_language) if CONFIG.answer_language in CODES else 0])
     combo = ttk.Combobox(g, textvariable=lang_var, values=names, state="readonly", font=(FONT_TEXT, 10), style="Cream.TCombobox")
     combo.pack(fill="x")
+    win._keep = [lang_var]                    # a Tk variable that nothing refers to is deleted, and its combobox goes blank
 
     def on_lang(_e=None):
         i = combo.current()
@@ -234,6 +236,24 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
             say("Answer language saved ✓")
 
     combo.bind("<<ComboboxSelected>>", on_lang)
+
+    _section(g, "App language")
+    ui_codes = list(i18n.LANGUAGES)
+    ui_names = [i18n.LANGUAGES[c] for c in ui_codes]
+    ui_var = tk.StringVar(value=i18n.LANGUAGES.get(prefs.get("ui_language", "auto"), ui_names[0]))
+    ui_combo = ttk.Combobox(g, textvariable=ui_var, values=ui_names, state="readonly", font=(FONT_TEXT, 10), style="Cream.TCombobox")
+    ui_combo.pack(fill="x")
+    win._keep.append(ui_var)
+    _note(g, "The words in Consiz's own windows. Restart Consiz to apply. (The language of the answers is set above, under "
+             "Answer language.)")
+
+    def on_ui_lang(_e=None):
+        i = ui_combo.current()
+        if 0 <= i < len(ui_codes):
+            prefs.set("ui_language", ui_codes[i])
+            say("Restart Consiz for the new language to apply.")
+
+    ui_combo.bind("<<ComboboxSelected>>", on_ui_lang)
 
     _section(g, "Start with Windows")
     auto_var = tk.BooleanVar(value=tray.is_autostart_enabled())
@@ -538,8 +558,8 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
         if not n:
             say("There are no saved chats.")
             return
-        if messagebox.askyesno("Consiz", f"Delete all {n} saved chats from this PC? This cannot be undone.", parent=win):
-            say(f"Deleted {history.delete_all()} chats ✓")
+        if messagebox.askyesno("Consiz", i18n.tf("Delete all {n} saved chats from this PC? This cannot be undone.", n=n), parent=win):
+            say(i18n.tf("Deleted {n} chats ✓", n=history.delete_all()))
 
     _button(hist_row, "Delete all saved chats", delete_chats).pack(side="left", padx=(px(8), 0))
 
@@ -548,8 +568,9 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
              "Consiz shows the welcome screens again next time it starts.")
 
     def clear_all():
-        if not messagebox.askyesno("Clear local data", "Clear Consiz's settings, saved sign-in and log from this PC?\n\n"
-                                   "You will be signed out. Consiz stays running until you restart it.", parent=win):
+        if not messagebox.askyesno(i18n.t("Clear local data"), i18n.t(
+                "Clear Consiz's settings, saved sign-in and log from this PC?\n\n"
+                "You will be signed out. Consiz stays running until you restart it."), parent=win):
             return
         done = localdata.clear_local_data()
         if on_sign_out and auth.enabled():
@@ -557,7 +578,7 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
                 on_sign_out()
             except Exception:
                 pass
-        say(f"Done ({len(done)} item(s)). Restart Consiz to finish ✓")
+        say(i18n.tf("Done ({n} item(s)). Restart Consiz to finish ✓", n=len(done)))
 
     _button(a, "Clear local data…", clear_all).pack(anchor="w", pady=(px(4), 0))
 

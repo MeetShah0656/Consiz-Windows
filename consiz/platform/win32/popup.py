@@ -15,7 +15,7 @@ import tkinter as tk
 from tkinter import font as tkfont
 from typing import Callable
 
-from consiz import history, prefs, voice
+from consiz import history, i18n, prefs, voice
 from consiz.config import CONFIG
 from consiz import dictation as _dictation
 from consiz.dictation import AudioRecorder
@@ -116,6 +116,7 @@ def _get_root() -> tk.Tk:
         _ROOT = tk.Tk()
         _ROOT.withdraw()
         a11y.apply_to_root(_ROOT)                  # Windows' text size, visible focus rings (T-17)
+        i18n.install()                             # Hindi (or English) words in every label, button and title (T-18)
 
         def _tk_error(exc, val, tb):               # errors inside button/key handlers: log them, keep running
             from consiz import logs
@@ -433,14 +434,14 @@ class PopupUI:
 
     def _set_placeholder(self, text: str | None = None) -> None:
         self.entry.delete("1.0", "end")
-        self.entry.insert("1.0", text or ("Ask about your PC…" if self.mode == "pc" else "Ask a follow-up…"))
+        self.entry.insert("1.0", i18n.t(text or ("Ask about your PC…" if self.mode == "pc" else "Ask a follow-up…")))
         self.entry.config(fg=INK_MUTED, height=1)
         self._placeholder_on = True
 
     # -- chat log primitives (UI thread only)
     def _log(self, text: str, *tags: str) -> None:
         self.chat.config(state="normal")
-        self.chat.insert("end", text, tags)
+        self.chat.insert("end", i18n.tl(text), tags)
         self.chat.config(state="disabled")
 
     def _scroll_end(self) -> None:
@@ -494,7 +495,7 @@ class PopupUI:
         if self.chat.get("1.0", "end-1c"):
             self.chat.insert("end", "\n")
         self.chat.insert("end", "Consiz", ("who_ai",))
-        self.chat.insert("end", "   Copy", ("who_ai", "copylink", tag))
+        self.chat.insert("end", "   " + i18n.t("Copy"), ("who_ai", "copylink", tag))
         self.chat.insert("end", "\n", ("who_ai",))
         self.chat.tag_bind(tag, "<Button-1>", lambda e, i=idx, t=tag: self._copy_msg(i, t))
         self.chat.config(state="disabled")
@@ -507,7 +508,7 @@ class PopupUI:
         r = self.chat.tag_ranges(tag)
         if r:
             self.chat.delete(r[0], r[1])
-            self.chat.insert(r[0], "   Copied ✓", ("who_ai", "copylink", tag))
+            self.chat.insert(r[0], "   " + i18n.t("Copied ✓"), ("who_ai", "copylink", tag))
         self.chat.config(state="disabled")
 
     def _add_user(self, text: str) -> None:
@@ -515,7 +516,7 @@ class PopupUI:
         self.chat.config(state="normal")
         if self.chat.get("1.0", "end-1c"):
             self.chat.insert("end", "\n")
-        self.chat.insert("end", "You\n", ("who_user",))
+        self.chat.insert("end", i18n.t("You") + "\n", ("who_user",))
         bubble = tk.Label(self.chat, text=text, font=(FONT_TEXT, 10), fg=CREAM_50, bg=MAROON_700, justify="left",
                           anchor="w", wraplength=max(dpi.px(180), int((self.window.winfo_width() or WIDTH) * 0.68)),
                           padx=11, pady=6)
@@ -546,7 +547,7 @@ class PopupUI:
         self.chat.config(state="normal")
         self.chat.mark_set("think_start", "end-1c")
         self.chat.mark_gravity("think_start", "left")
-        self.chat.insert("end", "\nConsiz is thinking…", ("thinking",))
+        self.chat.insert("end", "\n" + i18n.t("Consiz is thinking…"), ("thinking",))
         self.chat.config(state="disabled")
         self._scroll_end()
 
@@ -602,9 +603,9 @@ class PopupUI:
             path = history.export_text(self._transcript, self.title_lbl.cget("text"), self.meta_lbl.cget("text"),
                                        self._chat_started or time.time())
         except OSError as e:
-            self._set_meta(f"Could not save ({type(e).__name__})")
+            self._set_meta(i18n.tf("Could not save ({error})", error=type(e).__name__))
             return
-        self._set_meta(f"Saved: {path}")
+        self._set_meta(i18n.tf("Saved: {path}", path=path))
         try:
             subprocess.Popen(["explorer", "/select," + str(path)])
         except OSError:
@@ -636,7 +637,7 @@ class PopupUI:
                 self.history.append({"role": "assistant", "content": text})
             first = False
         self._chat_id, self._chat_started = record.get("id"), record.get("started") or time.time()
-        self._set_meta(f"Saved chat · {len(record.get('messages', []))} messages")
+        self._set_meta(i18n.tf("Saved chat · {n} messages", n=len(record.get("messages", []))))
 
     def _end_run(self, tok: CancelToken) -> None:
         self._save_history()
@@ -884,7 +885,7 @@ class PopupUI:
         self._transcript[-1][1] = self._msg_texts[-1]
         tag = "warn" if line.startswith("⚠") else ("ai_dim" if dim else "ai")
         self.chat.config(state="normal")
-        self.chat.insert("end", line + "\n", (tag,))
+        self.chat.insert("end", i18n.tl(line) + "\n", (tag,))
         self.chat.config(state="disabled")
         self._scroll_end()
         self._fit_height()
@@ -1089,8 +1090,9 @@ class PopupUI:
         for i, q in enumerate(self._PC_STARTERS):
             tag = f"chip{i}"
             self.chat.config(state="normal")
-            self.chat.insert("end", f"  ›  {q}" + chr(10), ("chip", tag))
-            self.chat.tag_bind(tag, "<Button-1>", lambda e, text=q: self._ask_text(text))
+            shown = i18n.t(q)
+            self.chat.insert("end", f"  ›  {shown}" + chr(10), ("chip", tag))
+            self.chat.tag_bind(tag, "<Button-1>", lambda e, text=shown: self._ask_text(text))
             self.chat.config(state="disabled")
         self._ai_open = False
         self.window.update_idletasks()
@@ -1361,11 +1363,11 @@ _ERROR_TITLES = {"NO_CONTEXT_FOUND": "Nothing selected", "AMBIGUOUS_SELECTION": 
 
 def _type_label(content_type: str) -> str:
     """'TEXT_SELECTION' -> 'Selected text' (people should not see internal names). Unknown values pass through."""
-    return _TYPE_LABELS.get(content_type, content_type)
+    return i18n.t(_TYPE_LABELS.get(content_type, content_type))
 
 
 def _error_title(title: str) -> str:
-    return _ERROR_TITLES.get(str(title), title)
+    return i18n.t(_ERROR_TITLES.get(str(title), title))
 
 
 _EDGE_CURSORS = {"l": "size_we", "r": "size_we", "t": "size_ns", "b": "size_ns",
@@ -1423,26 +1425,26 @@ def _close_stream(stream) -> None:
 
 
 def _mic_error_text(e: Exception) -> str:
-    return (f"Could not start the microphone ({str(e)[:100]}). Check that a microphone is connected and that Windows "
-            "allows desktop apps to use it: Settings > Privacy & security > Microphone.")
+    return i18n.tf("Could not start the microphone ({detail}). Check that a microphone is connected and that Windows "
+                   "allows desktop apps to use it: Settings > Privacy & security > Microphone.", detail=str(e)[:100])
 
 
 def _friendly_error(detail: str) -> str:
     from consiz.config import CONFIG
     d = detail.lower()
     if "no longer supported" in d:
-        return "Please update Consiz: this version is no longer supported."
+        return i18n.t("Please update Consiz: this version is no longer supported.")
     if "401" in d or "api key" in d or "insufficient credits" in d or "402" in d:
-        return "It's not you, it's the AI. (key problem — check the .env file)"
+        return i18n.t("It's not you, it's the AI. (key problem — check the .env file)")
     if "429" in d or "rate limit" in d:
-        return "It's not you, it's the AI. (too many requests — try again in a minute)"
+        return i18n.t("It's not you, it's the AI. (too many requests — try again in a minute)")
     if "timeout" in d or "timed out" in d:
         if getattr(CONFIG, "provider", "") == "ollama":
             return "It's not you, it's the AI. (local model timed out — 8B+ models can be slow on 4GB GPUs; try a smaller model like llama3.2)"
-        return "It's not you, it's the AI. (request timed out — server is busy, please retry)"
+        return i18n.t("It's not you, it's the AI. (request timed out — server is busy, please retry)")
     if getattr(CONFIG, "provider", "") == "ollama":
         return f"It's not you, it's the AI. (local Ollama error: {detail})"
-    return "It's not you, it's the AI. (couldn't reach the model — check internet and retry)"
+    return i18n.t("It's not you, it's the AI. (couldn't reach the model — check internet and retry)")
 
 
 def run_app_loop():

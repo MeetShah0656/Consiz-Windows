@@ -266,3 +266,17 @@ def test_a_click_inside_the_window_does_not_start_a_resize(tk_root, monkeypatch,
         assert ui.user_size is None
     finally:
         ui.window.destroy()
+
+
+def test_the_language_comboboxes_in_settings_show_their_value(tk_root, monkeypatch, tmp_path):
+    """A Tk variable nobody refers to is deleted when its function returns, which left these two boxes blank."""
+    from consiz import prefs
+    monkeypatch.setattr(prefs, "STORE", tmp_path / "prefs.json")
+    st, win = _open_settings(tk_root, monkeypatch, BIG, tab=0)
+    try:
+        boxes = _find(win, "TCombobox")
+        assert len(boxes) >= 3
+        assert [b.get() for b in boxes if not b.get()] == [], "an empty combobox"
+    finally:
+        st._OPEN["win"] = None
+        win.destroy()

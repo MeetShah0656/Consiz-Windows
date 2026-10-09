@@ -20,7 +20,7 @@ except ImportError:
     Image = None
     ImageDraw = None
 
-from consiz import history, hotkeys, pause, updater, voice
+from consiz import history, hotkeys, i18n, pause, updater, voice
 from consiz.config import CONFIG
 
 RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -29,7 +29,7 @@ APP_NAME = "Consiz"
 
 # Short on purpose. The tray menu sits at the screen edge, and Windows opens a sub-menu on the LEFT when it does not fit
 # on the right: the old long labels (~470 px) made it fly out the wrong way. The details are in Settings > Mouse.
-TRIGGER_LABELS = {"middle": "Middle click", "ctrl_middle": "Ctrl + middle click", "hotkey": "Keyboard only"}
+TRIGGER_LABELS = {"middle": "Middle click", "ctrl_middle": "Ctrl + middle click", "hotkey": "Keyboard only"}   # shown through i18n.t
 
 
 def is_autostart_enabled() -> bool:
@@ -116,6 +116,22 @@ def get_icon_image() -> Image.Image:
     return _create_default_icon_image()
 
 
+def _translated(item_factory):
+    """pystray's Item with its text (fixed or computed) passed through i18n.t()."""
+    def make(text, *args, **kwargs):
+        if callable(text):
+            inner = text
+            text = lambda item: i18n.t(inner(item))                      # noqa: E731
+        elif isinstance(text, str):
+            text = i18n.t(text)
+        return item_factory(text, *args, **kwargs)
+    return make
+
+
+if pystray is not None:
+    Item = _translated(Item)                                              # every tray text goes through i18n.t()
+
+
 def history_menu_items(on_open_chat: Optional[Callable[[str], None]]):
     """The items of tray > Recent chats: the last saved chats (only when the person turned saving on in Settings); a
     click shows that chat again (T-13)."""
@@ -178,7 +194,7 @@ class SystemTray:
             self.icon.icon = self._paused_image if paused else self._normal_image
             self.icon.title = "Consiz - paused" if paused else "Consiz — AI Context & Dictation"
             self.icon.update_menu()
-            self.icon.notify("Consiz is paused. It will not touch your mouse or keyboard." if paused
+            self.icon.notify(i18n.t("Consiz is paused. It will not touch your mouse or keyboard.") if paused
                              else "Consiz is active again.", "Consiz")
         except Exception:
             pass
@@ -193,7 +209,7 @@ class SystemTray:
             import webbrowser
             webbrowser.open(url)                          # the user installs it themselves: nothing runs by itself
         else:
-            icon.notify("The download link is not set yet. Please ask the person who shared Consiz with you.", "Consiz")
+            icon.notify(i18n.t("The download link is not set yet. Please ask the person who shared Consiz with you."), "Consiz")
 
     def _check_updates_now(self, icon, item):
         def work():
@@ -262,7 +278,7 @@ class SystemTray:
                 win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
             finally:
                 win32clipboard.CloseClipboard()
-            icon.notify("Diagnostics copied. Paste them into your message to support.", "Consiz")
+            icon.notify(i18n.t("Diagnostics copied. Paste them into your message to support."), "Consiz")
         except Exception:
             logs.exception("copy diagnostics")
 
@@ -303,7 +319,7 @@ class SystemTray:
 
             items = []
             for code, label, name, _ in LANGUAGES:
-                display = f"{label} ({name})" if code != "auto" else "Auto (Match selection)"
+                display = f"{label} ({name})" if code != "auto" else i18n.t("Auto (Match selection)")
                 items.append(
                     Item(display, select_lang(code), checked=make_is_checked(code), radio=True)
                 )
@@ -337,9 +353,9 @@ class SystemTray:
         menu = Menu(
             Item(lambda item: "⏸ Consiz is paused" if pause.is_paused() else "⚡ Consiz is active", None, enabled=False),
             Item(lambda item: "▶ Resume Consiz" if pause.is_paused() else "⏸ Pause Consiz", self._toggle_pause),
-            Item(lambda item: f"Explain Selection ({hotkeys.pretty(CONFIG.hotkey)})", self._trigger_explain),
-            *([Item(lambda item: f"Ask about my PC ({hotkeys.pretty(CONFIG.pc_hotkey)})", self._trigger_pc)] if self.on_pc else []),
-            Item(lambda item: f"Voice Dictate ({hotkeys.pretty(CONFIG.dictate_hotkey)})", self._trigger_dictate,
+            Item(lambda item: i18n.tf("Explain Selection ({key})", key=hotkeys.pretty(CONFIG.hotkey)), self._trigger_explain),
+            *([Item(lambda item: i18n.tf("Ask about my PC ({key})", key=hotkeys.pretty(CONFIG.pc_hotkey)), self._trigger_pc)] if self.on_pc else []),
+            Item(lambda item: i18n.tf("Voice Dictate ({key})", key=hotkeys.pretty(CONFIG.dictate_hotkey)), self._trigger_dictate,
                  visible=lambda item: voice.enabled()),
             Menu.SEPARATOR,
             Item("🌐 Answer Language", _make_lang_menu()),
@@ -347,7 +363,7 @@ class SystemTray:
             *([Item("🗂 Recent chats", _make_history_menu())] if self.on_open_chat else []),
             Item("⚙️ Settings…", self._open_settings),
             Item("Start on Windows Boot", self._toggle_autostart, checked=autostart_checked),
-            Item(lambda item: f"⬆ Download Consiz {(updater.last() or {}).get('latest', '')}", self._open_update,
+            Item(lambda item: i18n.tf("⬆ Download Consiz {version}", version=(updater.last() or {}).get("latest", "")), self._open_update,
                  visible=lambda item: self._update_ready()),
             Item("Help && diagnostics", Menu(
                 Item("Check for updates", self._check_updates_now),
@@ -375,7 +391,7 @@ class SystemTray:
             icon.visible = True
             if self.welcome:
                 try:
-                    icon.notify(self.welcome, "Consiz is running")   # tells a first-time user where the app lives
+                    icon.notify(i18n.t(self.welcome), i18n.t("Consiz is running"))   # tells a first-time user where the app lives
                 except Exception:
                     pass
 
