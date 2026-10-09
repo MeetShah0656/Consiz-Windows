@@ -118,3 +118,46 @@ def test_router_folder_routing(tmp_path):
     assert res.title == "Folder Analysis"
     assert "📁" in res.source_app
     assert "Subfolders:" in res.body
+
+
+def test_router_url_link_routing(monkeypatch):
+    from consiz import deterministic as det
+    monkeypatch.setattr(det, "fetch_url_summary", lambda url: {
+        "status": "ok",
+        "is_pdf": False,
+        "url": url,
+        "domain": "github.com",
+        "title": "GitHub: Where the world builds software",
+        "desc": "GitHub is where over 100 million developers shape the future of software.",
+        "text": "Enterprise, collaboration, code hosting, and CI/CD tools.",
+    })
+
+    ctx = CapturedContext(
+        source_app="Google Chrome",
+        capture_method=CaptureMethod.TEXT_SELECTION,
+        raw_content="https://github.com",
+    )
+    res = process(ctx)
+    assert res.title == "Website Overview"
+    assert "github.com" in res.source_app
+    assert "🌐" in res.source_app
+    assert res.content_type.startswith("URL")
+
+
+def test_router_pdf_document_routing(tmp_path):
+    from pypdf import PdfWriter
+    p = tmp_path / "sample_contract.pdf"
+    w = PdfWriter()
+    w.add_blank_page(200, 200)
+    w.write(str(p))
+
+    ctx = CapturedContext(
+        source_app="explorer.exe",
+        capture_method=CaptureMethod.FILE_PATH,
+        raw_content=str(p),
+        paths=[str(p)],
+    )
+    res = process(ctx)
+    assert res.title == "Document Overview"
+    assert res.content_type.startswith("FILE")
+    assert "sample_contract.pdf" in res.body

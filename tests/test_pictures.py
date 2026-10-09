@@ -113,7 +113,7 @@ def test_ordinary_files_are_not_treated_as_pictures(tmp_path, sent):
     txt.write_text("hello there " * 20)
     router.PICTURE_CONSENT = lambda name: pytest.fail("a text file must not ask about pictures")
     res = router.process(_ctx(txt))
-    assert res.title == "File"
+    assert res.title in ("File", "Document Overview"), "a text file is a document, never a picture"
 
 
 # ---------------------------------------------------------------- follow-ups can still see it

@@ -129,7 +129,7 @@ def test_tab_goes_from_the_question_box_through_send_and_the_answer_to_the_heade
     ui = pm.PopupUI()
     try:
         ui._show_at((100, 100), "Answer", "x")
-        _pump(tk_root)
+        _pump(tk_root, 0.9)                                   # once failed on a busy PC with 0.4 s: Tk skips widgets not yet mapped
         order, w = [], ui.entry
         for _ in range(40):
             order.append(w)

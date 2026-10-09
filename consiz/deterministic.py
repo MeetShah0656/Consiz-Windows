@@ -481,7 +481,7 @@ def extract_text(path: str, limit: int) -> str | None:
             from pypdf import PdfReader
             reader = PdfReader(path)
             out = []
-            for page in reader.pages[:3]:
+            for page in reader.pages[:8]:
                 out.append(page.extract_text() or "")
                 if sum(map(len, out)) >= limit:
                     break
@@ -550,6 +550,107 @@ def format_file(md: dict) -> str:
     kind = md["kind"] + (f", {md['extra']}" if md["extra"] else "")
     return (f"📄 {md['name']}\n{kind} · {md['size']}\n"
             f"Created {md['created']} · Modified {md['modified']}")
+
+
+# ---------------------------------------------------------------- URLs & Web Links
+def fetch_url_summary(url: str, timeout: float = 4.5) -> dict:
+    """Fetches and extracts title, meta description, and clean readable content for a URL."""
+    import io
+    import urllib.parse
+    import requests
+
+    raw_url = url.strip()
+    if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+        raw_url = "https://" + raw_url
+
+    parsed = urllib.parse.urlparse(raw_url)
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    try:
+        r = requests.get(raw_url, headers=headers, timeout=timeout, allow_redirects=True)
+        content_type = r.headers.get("Content-Type", "").lower()
+
+        # If the target is an online PDF
+        if "application/pdf" in content_type or parsed.path.lower().endswith(".pdf"):
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(r.content))
+            out = []
+            for page in reader.pages[:6]:
+                out.append(page.extract_text() or "")
+                if sum(map(len, out)) >= 4000:
+                    break
+            pdf_text = "\n".join(out).strip()
+            filename = os.path.basename(parsed.path) or "document.pdf"
+            return {
+                "status": "ok",
+                "is_pdf": True,
+                "url": raw_url,
+                "domain": domain,
+                "title": f"PDF: {filename}",
+                "desc": f"Online PDF document ({len(reader.pages)} pages) hosted on {domain}",
+                "text": pdf_text[:4000],
+            }
+
+        # Otherwise parse HTML
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        title = soup.title.string.strip() if (soup.title and soup.title.string) else ""
+        desc = ""
+        meta_desc = (
+            soup.find("meta", attrs={"name": "description"})
+            or soup.find("meta", attrs={"property": "og:description"})
+            or soup.find("meta", attrs={"name": "twitter:description"})
+        )
+        if meta_desc and meta_desc.get("content"):
+            desc = meta_desc["content"].strip()
+
+        # Remove irrelevant tags
+        for tag in soup(["script", "style", "noscript", "svg", "nav", "header", "footer"]):
+            tag.decompose()
+
+        # Collect headings
+        headings = [h.get_text(strip=True) for h in soup.find_all(["h1", "h2"]) if h.get_text(strip=True)][:5]
+        headings_str = " · ".join(headings) if headings else ""
+
+        body_text = " ".join(soup.get_text().split())
+        preview = (headings_str + "\n\n" + body_text if headings_str else body_text)[:3500]
+
+        return {
+            "status": "ok",
+            "is_pdf": False,
+            "url": raw_url,
+            "domain": domain,
+            "title": title,
+            "desc": desc,
+            "text": preview,
+        }
+    except Exception as e:
+        return {
+            "status": f"unreachable ({e})",
+            "is_pdf": False,
+            "url": raw_url,
+            "domain": domain,
+            "title": "",
+            "desc": "",
+            "text": "",
+        }
+
+
+def format_url(data: dict) -> str:
+    lines = [f"🌐 {data['url']}"]
+    if data.get("title"):
+        lines.append(f"Title: {data['title']}")
+    if data.get("desc"):
+        lines.append(f"Description: {data['desc']}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- CSV

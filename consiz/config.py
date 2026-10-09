@@ -125,18 +125,18 @@ class Config:
     hotkey: str = "<ctrl>+<alt>+s"      # keyboard fallback, per spec §4 "Fallback"
 
     # --- Capture ---
-    clipboard_settle_s: float = 0.25    # wait after simulated Cmd+C before reading the clipboard
-
+    clipboard_settle_s: float = 0.35    # wait after simulated Cmd+C before reading the clipboard
+ 
     # --- Classification ---
     confidence_threshold: float = 0.75  # spec §5.2 default
     question_max_chars: int = 300
-
+ 
     # --- Security ---
     redact_sensitive: bool = True       # redact credential-like patterns before the LLM sees them
-
+ 
     # --- Deterministic ---
     folder_max_entries: int = 2000
-    file_preview_chars: int = 3000     # ~ first 1–4 paragraphs
+    file_preview_chars: int = 6000     # rich preview for documents and PDFs
 
     # --- Profile (personal assistant knowledge) ---
     profile_path: str = str(Path(__file__).resolve().parent.parent / "profile.md")

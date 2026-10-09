@@ -46,3 +46,17 @@ def test_selected_text_that_is_a_path(tmp_path):
 
 def test_empty():
     assert classify(ctx("   ")).content_type == ContentType.UNSUPPORTED
+
+
+def test_url():
+    assert classify(ctx("https://github.com/torvalds/linux")).content_type == ContentType.URL
+    assert classify(ctx("http://example.com/test-page")).content_type == ContentType.URL
+    assert classify(ctx("www.python.org/downloads")).content_type == ContentType.URL
+    assert classify(ctx("news.ycombinator.com")).content_type == ContentType.URL
+
+
+def test_file_uri(tmp_path):
+    f = tmp_path / "doc.pdf"
+    f.write_text("dummy")
+    uri = f.as_uri()
+    assert classify(ctx(uri)).content_type == ContentType.FILE
