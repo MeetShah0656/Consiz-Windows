@@ -158,6 +158,20 @@ _TASKS = {
               "If you are not confident, say what you're unsure about instead of guessing.",
     "file_overview": "The content is the metadata and the first few paragraphs of a file. Give 3–5 bullets: what this file is, "
                      "what it is about, key points inside, what it seems to be for. Do not repeat dates, sizes or paths — they are shown already.",
+    "document_overview": (
+        "The content is the metadata and the extracted text from a document or PDF.\n"
+        "Give 3–5 clear bullets explaining its contents:\n"
+        "- First bullet: The title, subject, and document type (e.g. research report, guide, contract, specification).\n"
+        "- Next 2–4 bullets: Core themes, key sections, main findings, takeaways, or conclusions inside.\n"
+        "- Keep each bullet under 15 words. Follow house style. Do not repeat dates or sizes."
+    ),
+    "website_overview": (
+        "The user selected a web link or website URL. The page title, description, and website preview are provided in the content.\n"
+        "Explain what this website is about in 3–5 clear bullets:\n"
+        "- First bullet: Clear summary of what this website / company / platform is.\n"
+        "- Next 2–4 bullets: Primary services, products, information, or features it offers, and who it is for.\n"
+        "- Keep each bullet under 15 words. Follow house style. Do not guess or invent details not supported by the preview."
+    ),
     "folder_overview": (
         "The content provides the complete architecture of a folder: its directory tree, subfolders, file types, "
         "and excerpts from documents found across these subfolders.\n"
@@ -502,12 +516,18 @@ def _stream_openrouter_messages(messages: list[dict]) -> Iterator[str]:
     for attempt in range(2):
         got_text = False
         finish = None
-        for piece, f in _openrouter_sse(messages, policy, cap):
-            if piece:
-                got_text = True
-                yield piece
-            if f:
-                finish = f
+        try:
+            for piece, f in _openrouter_sse(messages, policy, cap):
+                if piece:
+                    got_text = True
+                    yield piece
+                if f:
+                    finish = f
+        except LLMError as e:
+            if attempt == 0 and "reasoning is mandatory" in str(e).lower():
+                policy, cap = _REASONING_CAPPED, cap * 2
+                continue
+            raise
         if got_text:
             try:
                 from . import usage

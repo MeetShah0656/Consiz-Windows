@@ -45,8 +45,31 @@ def _csv_shape(text: str) -> tuple[float, str]:
     return round(score, 2), delim
 
 
+import urllib.parse
+
+_URL_REGEX = re.compile(
+    r"^(https?://|www\.)[^\s<>{}\\|^`\[\]]+$",
+    re.IGNORECASE,
+)
+_COMMON_TLDS = (".com", ".org", ".net", ".edu", ".gov", ".io", ".ai", ".co", ".dev", ".app", ".in", ".uk", ".de", ".me")
+
+
+def _is_url(text: str) -> bool:
+    t = text.strip("'\"` ")
+    if "\n" in t or " " in t or len(t) < 4:
+        return False
+    if _URL_REGEX.match(t):
+        return True
+    # Domain-like strings: e.g. github.com/owner/repo or python.org
+    low = t.lower()
+    for tld in _COMMON_TLDS:
+        if (f"{tld}/" in low or low.endswith(tld)) and "." in low and not low.startswith("."):
+            return True
+    return False
+
+
 def classify(ctx: CapturedContext) -> ClassificationResult:
-    # 1. Explicit signals: Finder selection
+    # 1. Explicit signals: Explorer/Finder selection
     if ctx.capture_method in (CaptureMethod.FILE_PATH, CaptureMethod.FOLDER_PATH):
         return _classify_path(ctx.raw_content, ctx.paths)
 
@@ -54,10 +77,19 @@ def classify(ctx: CapturedContext) -> ClassificationResult:
     if not text:
         return ClassificationResult(ContentType.UNSUPPORTED, 0.0, reason="empty")
 
-    # 2. Selected text that is itself a path on disk
-    candidate = os.path.expanduser(text.strip("'\"` "))
+    # 2. Selected text that is itself a path on disk (or file:// URI)
+    clean_path = text.strip("'\"` ")
+    if clean_path.lower().startswith("file:///"):
+        clean_path = urllib.parse.unquote(clean_path[8:])
+    elif clean_path.lower().startswith("file://"):
+        clean_path = urllib.parse.unquote(clean_path[7:])
+    candidate = os.path.expanduser(clean_path)
     if len(text) < 1024 and "\n" not in text and os.path.exists(candidate):
         return _classify_path(candidate, [candidate])
+
+    # 3. URL / Web Link (Chrome, Edge, document link, or address bar)
+    if _is_url(text):
+        return ClassificationResult(ContentType.URL, 0.95, sub_type="web_link", reason="url link")
 
     # 3. Tabular data pasted/selected as text
     csv_conf, delim = _csv_shape(text)

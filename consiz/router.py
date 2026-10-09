@@ -45,6 +45,8 @@ def process(ctx: CapturedContext) -> Result:
             r = _file(ctx)
         elif cls.content_type == ContentType.CSV_DATA:
             r = _csv(ctx, cls, content)
+        elif cls.content_type == ContentType.URL:
+            r = _url(ctx)
         else:
             # Check if this text selection came from a browser with website context
             has_web_context = bool(ctx.source_domain or ctx.source_url or (ctx.source_title and any(b in app.lower() for b in ("chrome", "edge", "firefox", "brave", "opera", "vivaldi"))))
@@ -127,17 +129,74 @@ def _folder(ctx: CapturedContext, cls) -> Result:
     return r
 
 
+_DOC_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".txt", ".md", ".rtf", ".odt", ".epub"}
+
+
 def _file(ctx: CapturedContext) -> Result:
     md = det.file_metadata(ctx.raw_content)
     body = det.format_file(md)
+    ext = md["ext"]
+    is_doc = ext in _DOC_EXTS
+    title = "Document Overview" if is_doc else "File"
     if md["preview"]:
         preview, found = redact(md["preview"])
-        r = Result(title="File", content_type="FILE", body=body,
-                   stream=llm.stream("file_overview", f"{body}\n\n--- beginning of file ---\n{preview}"))
+        task_name = "document_overview" if is_doc else "file_overview"
+        prompt_content = f"Document: {md['name']} ({md['kind']})\n{body}\n\n--- Document Text Content Preview ---\n{preview}"
+        r = Result(title=title, content_type="FILE", body=body,
+                   stream=llm.stream(task_name, prompt_content))
+        r.source_content = prompt_content
         if found:
             r.warnings.append("redacted before processing: " + ", ".join(found))
         return r
-    return Result(title="File", content_type="FILE", body=body + f"\n({md['kind']} — can't read text inside, details above only)")
+    return Result(title=title, content_type="FILE", body=body + f"\n({md['kind']} — can't read text inside, details above only)")
+
+
+def _url(ctx: CapturedContext) -> Result:
+    url = ctx.raw_content.strip()
+    data = det.fetch_url_summary(url)
+    domain = data.get("domain", "")
+    title = data.get("title", "")
+    desc = data.get("desc", "")
+    text = data.get("text", "")
+    is_pdf = data.get("is_pdf", False)
+
+    domain_badge = domain or "Web"
+    page_badge = title or ""
+    header_badge = f"🌐 {domain_badge} · {page_badge[:32]}" if page_badge else f"🌐 {domain_badge}"
+    body = det.format_url(data)
+
+    if is_pdf:
+        prompt_content = (
+            f"Online PDF: {title}\n"
+            f"URL: {url}\n"
+            f"Domain: {domain}\n"
+            f"\n--- PDF Text Content Preview ---\n{text}"
+        )
+        task = "document_overview"
+        hint = f"Summarize the content of this online PDF from {domain}."
+    else:
+        prompt_content = (
+            f"Web Link: {url}\n"
+            f"Domain: {domain}\n"
+            f"Webpage Title: {title}\n"
+            f"Meta Description: {desc}\n"
+            f"\n--- Webpage Content Preview ---\n{text}"
+        )
+        task = "website_overview"
+        hint = f"Explain what {domain or 'this website'} is about based on the page preview."
+
+    if CONFIG.redact_sensitive:
+        prompt_content, _ = redact(prompt_content)
+
+    r = Result(
+        title="PDF Document" if is_pdf else "Website Overview",
+        content_type="URL",
+        source_app=header_badge,
+        body=body,
+        stream=llm.stream(task, prompt_content, hint=hint),
+    )
+    r.source_content = prompt_content
+    return r
 
 
 def _csv(ctx: CapturedContext, cls, content: str) -> Result:

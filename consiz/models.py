@@ -21,6 +21,7 @@ class ContentType(str, Enum):
     FILE = "FILE"
     FOLDER = "FOLDER"
     CSV_DATA = "CSV_DATA"
+    URL = "URL"
     UNSUPPORTED = "UNSUPPORTED"
 
 

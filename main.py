@@ -343,7 +343,6 @@ def main() -> int:
         run_once(CapturedContext("cli", CaptureMethod.TEXT_SELECTION, args.text))
         return 0
     if args.path:
-        import os
         p = os.path.abspath(os.path.expanduser(args.path))
         m = CaptureMethod.FOLDER_PATH if os.path.isdir(p) else CaptureMethod.FILE_PATH
         run_once(CapturedContext("cli", m, p, paths=[p]))
@@ -474,11 +473,18 @@ def main() -> int:
                 else:
                     show_settings_dialog(**kw)
 
+            def _exit_app():
+                try:
+                    trig.stop()
+                except Exception:
+                    pass
+                os._exit(0)
+
             tray = SystemTray(
                 on_explain=lambda src: on_trigger(src),
                 on_dictate=lambda src: on_dictate_trigger(src),
                 on_settings=_open_settings,
-                on_exit=lambda: os._exit(0),
+                on_exit=_exit_app,
                 on_pc=lambda src: on_pc_trigger(src),
                 on_sign_out=_sign_out if auth_on else None,
                 get_user_label=(lambda: ("Signed in: " + _auth.display_name()) if _auth.signed_in()

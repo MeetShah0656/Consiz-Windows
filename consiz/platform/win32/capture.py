@@ -293,7 +293,7 @@ def build_browser_context(hwnd: int, app_exe: str, win_title: str) -> dict:
 
 # ---------------------------------------------------------------- Explorer selection
 def explorer_selection() -> list[str]:
-    """Inspects the active Explorer window for selected files/folders via Shell COM (W-03)."""
+    """Inspects the active Explorer window or Desktop for selected files/folders via Shell COM (W-03)."""
     init_com_for_thread()
     paths: list[str] = []
     try:
@@ -310,6 +310,19 @@ def explorer_selection() -> list[str]:
                     break
             except Exception:
                 continue
+
+        # If no open Explorer window matched, check desktop items
+        if not paths:
+            try:
+                SWC_DESKTOP = 0x00000008
+                SWFO_NEEDDISPATCH = 0x00000001
+                desktop = shell.Windows().FindWindowSW(0, 0, SWC_DESKTOP, 0, SWFO_NEEDDISPATCH)
+                if desktop:
+                    sel = desktop.Document.SelectedItems()
+                    for i in range(sel.Count):
+                        paths.append(sel.Item(i).Path)
+            except Exception:
+                pass
     except Exception:
         pass
     return [p.rstrip("/\\") if len(p) > 3 else p for p in paths if p.strip()]
@@ -506,9 +519,17 @@ def clipboard_fallback() -> tuple[str, list[str]]:
     return captured_text, [p.rstrip("/\\") if len(p) > 3 else p for p in captured_paths]
 
 
-def _looks_like_address_bar(text: str) -> bool:
-    t = text.strip()
-    return bool(t) and "\n" not in t and " " not in t and t.lower().startswith(("http://", "https://", "file://"))
+def _resolve_local_file_url(text: str) -> str | None:
+    t = text.strip("'\"` ")
+    if t.lower().startswith("file:///"):
+        p = urllib.parse.unquote(t[8:])
+        if os.path.exists(p):
+            return p
+    elif t.lower().startswith("file://"):
+        p = urllib.parse.unquote(t[7:])
+        if os.path.exists(p):
+            return p
+    return None
 
 
 def _path_context(app: str, paths: list[str]) -> CapturedContext:
@@ -540,8 +561,9 @@ def capture() -> CapturedContext:
 
         # 2. UI Automation
         text, definitely_empty = uia_selection_probe()
-        if _looks_like_address_bar(text):
-            text = ""  # focus in browser address bar; fall back
+        local_file = _resolve_local_file_url(text)
+        if local_file:
+            return _path_context(app, [local_file])
         if text.strip():
             browser_info = get_browser_info()
             ctx = CapturedContext(
@@ -566,10 +588,9 @@ def capture() -> CapturedContext:
         text, paths = clipboard_fallback()
         if paths:
             return _path_context(app, paths)
-        if _looks_like_address_bar(text):
-            return CapturedContext(source_app=get_browser_info().get("browser", app), capture_method=CaptureMethod.NONE,
-                                   raw_content="", paths=[],
-                                   note="address bar was copied — click into the page text and reselect")
+        local_file = _resolve_local_file_url(text)
+        if local_file:
+            return _path_context(app, [local_file])
         if text.strip():
             browser_info = get_browser_info()
             ctx = CapturedContext(
