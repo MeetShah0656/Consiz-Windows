@@ -21,6 +21,21 @@ SUCCESS = "#4E6A45"    # restrained confirmation state
 WARNING = "#A55D24"    # restrained warning state
 FOCUS_RING = "#A84D59" # visible accessibility focus
 
+SELECT_BG = CREAM_300      # selected text in the answer window
+SELECT_FG = MAROON_900
+RECORDING_RED = "#B3261E"  # the microphone button while listening
+
+# A Windows high-contrast theme (T-17): use ITS colours, whatever the person chose. Read once, when Consiz starts.
+from . import a11y  # noqa: E402
+
+if a11y.high_contrast():
+    CREAM_50 = CREAM_100 = "SystemWindow"
+    CREAM_200 = "SystemButtonFace"
+    CREAM_300 = "SystemWindowText"
+    MAROON_900 = MAROON_800 = INK_MUTED = SUCCESS = WARNING = "SystemWindowText"
+    MAROON_700 = MAROON_600 = FOCUS_RING = RECORDING_RED = "SystemHighlight"
+    SELECT_BG, SELECT_FG = "SystemHighlight", "SystemHighlightText"
+
 # Fonts
 FONT_DISPLAY = "Segoe UI"
 FONT_TEXT = "Segoe UI"

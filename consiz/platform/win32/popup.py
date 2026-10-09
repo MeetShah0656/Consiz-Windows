@@ -23,7 +23,7 @@ from consiz.llm import (KIND_TITLES, Cancelled, CancelToken, LLMError, SignInReq
                         use_token)
 from consiz.models import CapturedContext, CaptureMethod, Result
 from consiz.output import _pretty_line
-from consiz.platform.win32 import dpi
+from consiz.platform.win32 import a11y, dpi
 from consiz.platform.win32.theme import (
     CREAM_50,
     CREAM_100,
@@ -39,10 +39,12 @@ from consiz.platform.win32.theme import (
     FOCUS_RING,
     FONT_DISPLAY,
     FONT_TEXT,
+    RECORDING_RED,
+    SELECT_BG,
+    SELECT_FG,
 )
 
 WIDTH = dpi.px(420)
-RECORDING_RED = "#B3261E"         # the microphone button while listening
 PAD = 14
 RESIZE_BAND = dpi.px(7)           # the strip along each edge of the popup that can be dragged to resize it
 SW_SHOWNOACTIVATE = 4
@@ -113,6 +115,7 @@ def _get_root() -> tk.Tk:
     if _ROOT is None:
         _ROOT = tk.Tk()
         _ROOT.withdraw()
+        a11y.apply_to_root(_ROOT)                  # Windows' text size, visible focus rings (T-17)
 
         def _tk_error(exc, val, tb):               # errors inside button/key handlers: log them, keep running
             from consiz import logs
@@ -178,6 +181,7 @@ class PopupUI:
         self.window: tk.Toplevel | None = None
         self._lines: list[str] = []
         self.user_size: tuple[int, int] | None = _load_size()     # remembered from the last resize (KI-13)
+        self._focus_after_show = False
         self._chat_id: str | None = None       # the saved-chat file this conversation is written to (T-13), once it has one
         self._chat_started = 0.0
         self._resize: tuple | None = None      # a drag in progress: (edges, mouse x, mouse y, window box at the start)
@@ -273,8 +277,8 @@ class PopupUI:
         # ---- chat log (a read-only Text: selectable, streams in place, scrolls)
         log_frame = tk.Frame(container, bg=card_bg, highlightbackground=CREAM_300, highlightthickness=1)
         log_frame.pack(fill="both", expand=True, side="top")
-        chat = tk.Text(log_frame, font=(FONT_TEXT, 10), fg=MAROON_900, bg=card_bg, selectbackground=CREAM_300,
-                       selectforeground=MAROON_900, wrap="word", relief="flat", padx=10, pady=8, height=6,
+        chat = tk.Text(log_frame, font=(FONT_TEXT, 10), fg=MAROON_900, bg=card_bg, selectbackground=SELECT_BG,
+                       selectforeground=SELECT_FG, wrap="word", relief="flat", padx=10, pady=8, height=6,
                        highlightthickness=0, cursor="arrow", spacing1=1, spacing3=1)
         scrollbar = tk.Scrollbar(log_frame, orient="vertical", command=chat.yview)
         scrollbar.pack(side="right", fill="y")
@@ -377,6 +381,20 @@ class PopupUI:
             w.bind("<B1-Motion>", do_drag)
 
         win.bind("<Escape>", lambda e: self.hide())
+
+        # ---- keyboard and screen readers (T-17): every label that acts as a button can be tabbed to and pressed with
+        #      Enter/Space; Tab goes entry > microphone > Send > the answer > footer > header; each gets a spoken name.
+        for widget, action, name in ((close_btn, self.hide, "Close"), (min_btn, self.toggle_minimize, "Minimise"),
+                                     (new_btn, self.new_chat, "New chat"), (copy_btn, lambda: on_copy(None), "Copy all"),
+                                     (save_btn, self._export_text, "Save as text"),
+                                     (mic_btn, self._mic_click, "Speak your question"),
+                                     (send_btn, self._send_or_stop, "Send")):
+            a11y.make_clickable(widget, action, name)
+        for group in ((entry, mic_btn, send_btn), (copy_btn, save_btn), (new_btn, min_btn, close_btn)):
+            for widget in group:
+                widget.lift()                      # Tk tabs through widgets in stacking order: make it the visual order
+        for frame in (input_row, log_frame, footer, header):
+            frame.lift()
 
         self.window = win
         self.min_btn = min_btn
@@ -544,6 +562,7 @@ class PopupUI:
         """While an answer is coming the Send button becomes Stop (T-05)."""
         self._chat_busy = busy
         self.send_btn.config(bg=MAROON_900 if busy else MAROON_700, text="■ Stop" if busy else "Send ➤")
+        a11y.set_name(self.send_btn, "Stop" if busy else "Send")
 
     # ------------------------------------------------------------------ Stop / cancel (T-05)
     def _new_token(self) -> CancelToken:
@@ -835,12 +854,24 @@ class PopupUI:
         self._refresh_mic()
         # Show without stealing focus (W-07); typing is enabled only when the user clicks the input.
         self._noactivate(True)
+        self._focus_after_show = a11y.popup_takes_focus()          # keyboard / screen-reader users: see below
         try:
             hwnd = self._hwnd()
             user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
             user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
         except Exception:
             self.window.deiconify()
+        self._apply_names()
+        if self._focus_after_show:                                 # the keyboard focus moves in, so typing just works
+            self.window.after(60, self._activate)
+
+    def _apply_names(self) -> None:
+        """What a screen reader reads for the window and its two main areas. Done after the window exists: before that
+        Windows has not yet given a Tk window its real outer window."""
+        self.window.title("Consiz answer")                  # the window's own name (Tk keeps it on the outer window)
+        a11y.set_name(self.entry, "Your question")
+        a11y.set_name(self.chat, "Conversation")
+        a11y.set_name(self.send_btn, "Stop" if self._chat_busy else "Send")
 
     def _append(self, line: str, dim: bool = False) -> None:
         self._hide_thinking()

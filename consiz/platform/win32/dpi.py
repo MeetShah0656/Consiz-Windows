@@ -52,7 +52,10 @@ def scale() -> float:
         override = float(os.environ.get("CONSIZ_UI_SCALE", "0"))
     except ValueError:
         override = 0.0
-    return override if override > 0 else _state["scale"]
+    if override > 0:
+        return override
+    from . import a11y
+    return _state["scale"] * a11y.text_scale()           # Windows' "Text size": fonts (tk scaling) and these sizes grow together
 
 
 def px(n: float) -> int:

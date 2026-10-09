@@ -14,7 +14,7 @@ import webbrowser
 
 from consiz import history, hotkeys, pause, prefs, voice
 from consiz.config import CONFIG
-from consiz.platform.win32 import dpi
+from consiz.platform.win32 import a11y, dpi
 from consiz.platform.win32.dpi import px
 from consiz.platform.win32.theme import (
     CREAM_50,
@@ -406,6 +406,15 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     _button(btns, "Reset to default", lambda: apply_hotkeys(reset=True)).pack(side="left", padx=(px(8), 0))
 
     # =============================================================== PC mode
+
+    _section(k, "Accessibility")
+    focus_var = tk.BooleanVar(value=a11y.popup_takes_focus())
+    _check(k, "Move the keyboard focus into the answer window when it opens", focus_var,
+           lambda: (prefs.set("popup_takes_focus", focus_var.get()), say("Saved ✓")))
+    _note(k, "Consiz follows the Windows settings for Text size and High contrast (restart Consiz after changing them). "
+             "Every button in the answer window can be reached with the Tab key and pressed with Enter or Space. "
+             "On while a screen reader is running.")
+
     p = new_tab("PC mode")
     _section(p, "Permission")
     perm_lbl = tk.Label(p, text="", font=(FONT_TEXT, 10), bg=CREAM_50, fg=MAROON_900, anchor="w")
