@@ -1,5 +1,6 @@
 """T-02: the windowless exe must leave evidence of errors, and the evidence must never contain user content/secrets."""
 import logging
+import logging.handlers
 import sys
 import threading
 
@@ -33,7 +34,8 @@ def test_setup_is_idempotent_and_writes_a_file(fresh_log):
     logs.setup()
     logs.setup()
     fresh_log.info("hello from a test")
-    assert len([h for h in fresh_log.handlers]) == 1
+    files = [h for h in fresh_log.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
+    assert len(files) == 1, "two setup() calls must not add a second file handler (pytest adds its own capture handlers: ignore those)"
     assert "hello from a test" in _read()
 
 

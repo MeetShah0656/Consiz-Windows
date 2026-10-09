@@ -297,8 +297,8 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
         def show_model_status():
             name = names_by_label[model_var.get()]
             model_status.config(text="Speech model: downloaded, works offline ✓" if voice.model_cached(name) else
-                                f"Speech model: not downloaded yet. Consiz asks once, then downloads about "
-                                f"{voice.model_mb(name)} MB the first time you speak.")
+                                i18n.tf("Speech model: not downloaded yet. Consiz asks once, then downloads about {mb} MB "
+                                        "the first time you speak.", mb=voice.model_mb(name)))
 
         def on_model(_e=None):
             from consiz import dictation

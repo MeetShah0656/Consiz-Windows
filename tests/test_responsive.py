@@ -129,6 +129,9 @@ def test_settings_on_a_big_screen_needs_no_scroll_bar(tk_root, monkeypatch, tmp_
     monkeypatch.setattr(prefs, "STORE", tmp_path / "prefs.json")
     st, win = _open_settings(tk_root, monkeypatch, BIG, tab=0)
     try:
+        wanted = dpi.fit_size((dpi.px(620), dpi.px(830)), BIG, fraction=0.9)[1]
+        if win.winfo_height() < wanted - 2:                    # a small real screen (a CI machine) squeezes the window
+            pytest.skip(f"this screen is too small to open the window at its full height ({win.winfo_height()} < {wanted})")
         assert not [b for b in _find(win, "TScrollbar") if b.winfo_ismapped()]
     finally:
         st._OPEN["win"] = None
