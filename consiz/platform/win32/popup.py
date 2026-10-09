@@ -189,6 +189,7 @@ class PopupUI:
         )
         self._is_dictating = False
         self._voice_target = "instruction"     # what a finished recording becomes: "instruction" on the selection, or a chat "question"
+        self.on_confirm_action: Callable[[str, str], bool] | None = None    # set by main: the Yes/No box for CHANGE actions (T-12)
         self.on_voice_prepare: Callable[[], bool] | None = None     # set by main: asks to download the speech model if needed
         self._captured_ctx: CapturedContext | None = None
         self.dictate_btn: tk.Label | None = None
@@ -1142,7 +1143,7 @@ class PopupUI:
             if self.mode == "pc" and pc_actions.is_action_line(line):
                 # The AI may SUGGEST one-click actions; each becomes a button that runs only when clicked.
                 if len(actions) < pc_actions.MAX_ACTIONS:
-                    act = pc_actions.parse(line, pc_mode.last_windows())
+                    act = pc_actions.parse(line, pc_mode.last_windows(), pc_mode.last_startup())
                     if act is not None:
                         actions.append(act)
                         post(self._add_action, act)
@@ -1214,7 +1215,7 @@ class PopupUI:
 
         def work():
             from consiz import pc_actions
-            ok, msg = pc_actions.run(action)
+            ok, msg = pc_actions.run(action, confirm=self.on_confirm_action)     # a CHANGE action asks first, inside run()
             _dispatch(self._replace_tag_text, tag, f"  {'✓' if ok else '⚠'}  {action.label} — {msg}",
                       "ai_dim" if ok else "warn")
 

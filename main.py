@@ -187,6 +187,15 @@ def _picture_on_clipboard(ctx):
     return router.picture_result(img, "picture from the clipboard", ctx.source_app)
 
 
+def _confirm_change(title: str, text: str) -> bool:
+    """The Yes/No box for actions that CHANGE the PC (close a program, delete old temp files, stop a startup item).
+    Warning icon, No is the default, and it stays on top of the answer window."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    return ctypes.windll.user32.MessageBoxW(None, text, title, 0x40134) == 6      # YESNO | WARNING | default No | topmost
+
+
 _VOICE_CANCEL = threading.Event()
 
 
@@ -473,6 +482,7 @@ def main() -> int:
     POPUP.on_ask = ask_handler
     POPUP.on_dictate = dictate_handler
     POPUP.on_voice_prepare = _voice_ready
+    POPUP.on_confirm_action = _confirm_change
 
     from consiz import prefs
 
@@ -534,6 +544,12 @@ def main() -> int:
                 welcome="Select any text, then press the middle mouse button.",
             )
             tray.start()
+            from consiz import hotkeys as _hotkeys, watcher as _watcher
+            from consiz.platform.win32.sysinfo import quick_sample
+            _watcher.Watcher(
+                quick_sample, lambda title, text: tray.icon is not None and tray.icon.notify(text, title),
+                enabled=lambda: bool(prefs.get("watcher_enabled", False)),
+                hint=lambda: _hotkeys.pretty(CONFIG.pc_hotkey)).start()
             if llm.server_mode():
                 from consiz import updater
 

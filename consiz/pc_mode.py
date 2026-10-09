@@ -15,7 +15,7 @@ from . import security
 
 MAX_CHARS = 6500                 # the whole snapshot block; keeps the request small and fast
 CACHE_SECONDS = 15               # follow-up questions inside this window reuse the same snapshot
-_cache: dict = {"at": 0.0, "text": "", "summary": "", "windows": []}
+_cache: dict = {"at": 0.0, "text": "", "summary": "", "windows": [], "startup": []}
 _lock = threading.Lock()
 
 
@@ -82,7 +82,8 @@ def render(snap: dict) -> tuple[str, str]:
         lines += [f"- {a['name']}: {a['cpu_percent']}%" for a in busy]
 
     if snap.get("startup"):
-        lines += ["", "STARTS WITH WINDOWS", "- " + ", ".join(snap["startup"][:25])]
+        lines += ["", "STARTS WITH WINDOWS (the S-numbers are for disable_startup)",
+                  "- " + ", ".join(f"[S{i}] {name}" for i, name in enumerate(snap["startup"][:25], 1))]
     net = snap.get("network")
     if net:
         lines += ["", f"NETWORK: {net['established']} active connections; most: "
@@ -106,8 +107,15 @@ def get_context(collect=None, force: bool = False) -> tuple[str, str]:
     snap = collect()
     text, summary = render(snap)
     with _lock:
-        _cache.update(at=time.time(), text=text, summary=summary, windows=list(snap["windows"][:30]))
+        _cache.update(at=time.time(), text=text, summary=summary, windows=list(snap["windows"][:30]),
+                      startup=list(snap.get("startup") or [])[:25])
     return text, summary
+
+
+def last_startup() -> list[str]:
+    """The numbered startup programs from the latest snapshot ([S1] = first), for disable_startup lookups."""
+    with _lock:
+        return list(_cache["startup"])
 
 
 def last_windows() -> list[dict]:

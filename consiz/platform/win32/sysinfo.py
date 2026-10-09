@@ -174,6 +174,40 @@ def _network() -> dict | None:
     return {"established": len(conns), "by_app": [{"app": a, "connections": n} for a, n in top]}
 
 
+_watched: dict[int, "psutil.Process"] = {}
+
+
+def quick_sample() -> dict:
+    """Three cheap numbers for the opt-in watcher (consiz/watcher.py): CPU, memory, free disk, and who uses the CPU.
+    Nothing is stored or sent. Per-program CPU is the change since the previous call (so the first call shows none)."""
+    out: dict = {"cpu": psutil.cpu_percent(interval=None), "ram": psutil.virtual_memory().percent, "top": []}
+    drive = os.environ.get("SystemDrive", "C:") + os.sep
+    try:
+        u = psutil.disk_usage(drive)
+        out.update(disk_drive=drive.rstrip(os.sep), disk_free_gb=round(u.free / GB, 1), disk_free_percent=100.0 - u.percent)
+    except OSError:
+        pass
+    cores = psutil.cpu_count() or 1
+    totals: dict[str, float] = {}
+    alive = set()
+    for p in psutil.process_iter(["pid", "name"]):
+        pid = p.info["pid"]
+        if not pid:
+            continue                                         # the "System Idle Process" counts spare capacity as CPU
+        alive.add(pid)
+        proc = _watched.setdefault(pid, p)
+        try:
+            pct = proc.cpu_percent(interval=None) / cores
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if pct > 0.5:
+            totals[p.info["name"] or "?"] = totals.get(p.info["name"] or "?", 0.0) + pct
+    for pid in [k for k in _watched if k not in alive]:
+        _watched.pop(pid, None)
+    out["top"] = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    return out
+
+
 def snapshot() -> dict:
     psutil.cpu_percent(interval=None)                 # prime the system-wide counter
     apps = _apps()                                    # includes the 0.4 s CPU sampling window

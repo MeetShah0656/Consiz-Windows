@@ -335,6 +335,9 @@ _PC_ACTION_RULE = (
     "- If ONE click would genuinely help the user, you may end your answer with up to 2 lines, each exactly: "
     "ACTION: <one of: {allowed}>. Only suggest an action when it is clearly useful; never for plain information "
     "questions. The user must click a button; you cannot run anything.\n"
+    "- end_program, clear_temp and disable_startup CHANGE things: suggest one only when the user clearly asked how to "
+    "fix a slow, full or frozen PC and the snapshot shows the cause (a program using a lot of CPU or memory, a full "
+    "disk, a startup item). Never for Windows' own programs. The user is always asked to confirm before anything happens.\n"
 )
 
 

@@ -240,6 +240,14 @@ def show_settings_dialog(parent: Optional[tk.Tk] = None, on_saved: Optional[Call
     _check(g, "Start Consiz when I sign in to Windows", auto_var,
            lambda: (tray.set_autostart_enabled(auto_var.get()), say("Saved ✓")))
 
+    _section(g, "PC watcher")
+    watch_var = tk.BooleanVar(value=bool(prefs.get("watcher_enabled", False)))
+    _check(g, "Tell me when my PC has been slow, full or short of disk space", watch_var,
+           lambda: (prefs.set("watcher_enabled", watch_var.get()), say("Saved ✓")))
+    _note(g, "Off until you turn it on. Every 30 seconds Consiz reads three numbers on this PC (CPU, memory, free disk). "
+             "Nothing is sent anywhere, no AI is used, nothing is stored and nothing is closed. It only shows one small "
+             "message when something stays high for a few minutes.")
+
     _section(g, "Where answers come from")
     server = llm.server_mode()
     src_var = tk.StringVar(value="ollama" if CONFIG.provider == "ollama" else "openrouter")

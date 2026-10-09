@@ -36,7 +36,7 @@ def test_highlights_are_computed_by_code():
 def test_render_lists_windows_programs_and_flags():
     text, summary = pc_mode.render(_snap())
     assert "[FOCUSED]" in text and "[minimized]" in text and "brave.exe: 36 process(es)" in text
-    assert "OneDrive, Spotify" in text and "HIGHLIGHTS" in text
+    assert "[S1] OneDrive, [S2] Spotify" in text and "HIGHLIGHTS" in text
     assert summary == "2 windows · 3 programs"
 
 
