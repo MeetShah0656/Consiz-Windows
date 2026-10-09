@@ -178,13 +178,23 @@ def _collect_widget_text(root):
 NOT_TRANSLATED = {"Consiz", "tk", "x", "n", "—", "✕", "✦", "◢", "🎙", "Answer", "OpenRouter (uses the key below)"}
 
 
+def _fits_a_template(text):
+    """A sentence that was already filled in from a template ('... about 484 MB ...') is covered by its template."""
+    for key in HI:
+        if "{" in key:
+            pattern = "^" + r"(.+?)".join(re.escape(part) for part in re.split(r"\{\w+\}", key)) + "$"
+            if re.match(pattern, text, re.S):
+                return True
+    return False
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 def test_every_text_in_the_main_windows_has_a_hindi_translation(tk_root):
     texts = _collect_widget_text(tk_root)
     assert len(texts) > 100, "the windows were not built"
     missing = sorted(s for s in texts if s not in HI and s not in NOT_TRANSLATED and not s.startswith("Consiz 0.")
                      and not re.fullmatch(r"[\W\d_]*", s) and "gemma" not in s and "OpenRouter key (developer" not in s
-                     and "Saved ✓" != s and "ollama pull" not in s)
+                     and "Saved ✓" != s and "ollama pull" not in s and not _fits_a_template(s))
     assert missing == [], "windows show English because these have no Hindi text:\n" + "\n".join(repr(m) for m in missing)
 
 
